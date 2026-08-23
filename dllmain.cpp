@@ -2,8 +2,7 @@
 #include "UnityResolve.hpp"
 
 auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) -> BOOL {
-    unity::UnityClass class_;
-    auto result = class_[UTYPE(unity::UnityMethod), ""];
+    unity::set_params(unity::UnityMode::IL2CPP, nullptr);
 
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
