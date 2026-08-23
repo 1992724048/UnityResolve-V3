@@ -4,5 +4,6 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="../Library/glm/glm.vcxitems" Id="bf232a4e-9838-4e2a-a144-bcc9f616d646" />
+  <Project Path="../Library/stdpp/stdpp.vcxitems" Id="83123dd2-7a7e-496b-9b5d-e426d0ee48e3" />
   <Project Path="UnityResolve-V3.vcxproj" Id="297231fb-9f17-47d9-ae24-5328c7cd7c9a" />
 </Solution>
