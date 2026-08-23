@@ -8,6 +8,25 @@
 #include <string>
 #include <type_traits>
 
+#ifdef USE_GLM
+#include <glm/glm.hpp>
+#else
+#error "Please use the glm math library."
+#endif
+
+#if (defined(__i386__) || defined(__x86__)) || (defined(__arm__) && !defined(__aarch64__))
+#error "32-bit is not supported, please use a 64-bit compiler."
+#endif
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <Windows.h>
+#define UNITY_CALLING_CONVENTION __fastcall
+#elif defined(__ANDROID__) || defined(__APPLE__) || defined(__MACH__) || defined(__linux__) || defined(__harmony__)
+#include <locale>
+#include <dlfcn.h>
+#define UNITY_CALLING_CONVENTION
+#endif
+
 #define UTYPE(type) unity::TypeIdentity<type>{}
 
 namespace unity {
@@ -27,6 +46,18 @@ namespace unity {
 
     template<typename T> concept ClassMember = std::is_same_v<T, UnityField> || std::is_same_v<T, UnityMethod>;
 
+    namespace details {
+        template<typename T>
+        auto try_find(std::shared_mutex& mutex, const std::string& name, const std::map<std::string, std::shared_ptr<T>> container) -> std::optional<std::weak_ptr<T>> {
+            std::shared_lock _(mutex);
+            const auto it = container.find(name);
+            if (it == container.end()) {
+                return std::nullopt;
+            }
+            return it->second;
+        }
+    }
+
     class UnityAssembly final {
         std::uint64_t native_ptr{};
         std::string native_name;
@@ -43,12 +74,7 @@ namespace unity {
         }
 
         auto operator[](const std::string& class_name) const -> std::optional<std::weak_ptr<UnityClass>> {
-            std::shared_lock _(mutex);
-            const auto it = unity_class.find(class_name);
-            if (it == unity_class.end()) {
-                return std::nullopt;
-            }
-            return it->second;
+            return details::try_find(mutex, class_name, unity_class);
         }
     };
 
@@ -85,15 +111,11 @@ namespace unity {
         }
 
         template<ClassMember T>
-        auto operator[](TypeIdentity<T> /* unused */, const std::string& class_name) const -> std::optional<std::weak_ptr<T>> {
+        auto operator[](TypeIdentity<T> /* unused */, const std::string& name) const -> std::optional<std::weak_ptr<T>> {
             std::shared_lock _(mutex);
 
             const auto& container = get_container<T>();
-            const auto it = container.find(class_name);
-            if (it != container.end()) {
-                return it->second;
-            }
-            return std::nullopt;
+            return details::try_find(mutex, name, container);
         }
     private:
         template<ClassMember U>
@@ -150,18 +172,14 @@ namespace unity {
             return args.size();
         }
 
-        auto operator[](const std::string& arg_name) -> std::optional<std::weak_ptr<UnityType>> {
-            std::shared_lock _(mutex);
-            const auto it = args.find(arg_name);
-            if (it == args.end()) {
-                return std::nullopt;
-            }
-            return it->second;
+        auto operator[](const std::string& arg_name) const -> std::optional<std::weak_ptr<UnityType>> {
+            return details::try_find(mutex, arg_name, args);
         }
     };
 
     class UnityMethod final {
         std::uint64_t native_ptr{};
+        std::uint64_t native_call_ptr{};
 
         std::weak_ptr<UnityClass> native_class;
         std::shared_ptr<UnityType> native_type;
@@ -199,6 +217,11 @@ namespace unity {
 
         auto is_static() const noexcept -> bool {
             return native_is_static;
+        }
+
+        template<typename Return, typename... Args>
+        auto invoke(Args&&... args) -> Return {
+            return reinterpret_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(native_call_ptr)(std::forward<Args>(args)...);
         }
     };
 } // namespace unity
