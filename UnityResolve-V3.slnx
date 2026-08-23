@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="UnityResolve-V3.vcxproj" />
+  <Project Path="UnityResolve-V3.vcxproj" Id="297231fb-9f17-47d9-ae24-5328c7cd7c9a" />
 </Solution>
