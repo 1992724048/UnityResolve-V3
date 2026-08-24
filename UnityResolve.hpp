@@ -439,6 +439,7 @@ namespace unity {
 
             inline auto try_load_method_il2cpp() -> void {}
             inline auto try_load_method_mono() -> void {}
+
             inline auto try_load_method(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {}
 
             inline auto foreach_load_field(const std::string_view class_get_fields,
@@ -640,6 +641,13 @@ namespace unity {
         details::unity_types.clear();
 
         details::thread_detach();
+    }
+
+    inline auto find_assembly(const std::string_view name) -> std::optional<std::weak_ptr<UnityAssembly>> {
+        if (!details::unity_assembly.contains(name)) {
+            return std::nullopt;
+        }
+        return details::unity_assembly[name];
     }
 
     namespace api {
