@@ -143,11 +143,10 @@ namespace unity {
         friend auto process::fix_type_depend() -> void;
     public:
         UnityClass(const std::uintptr_t native_ptr,
-                   const std::shared_ptr<UnityAssembly>& native_assembly,
-                   const std::shared_ptr<UnityType>& native_type,
+                   const std::weak_ptr<UnityAssembly>& native_assembly,
+                   const std::weak_ptr<UnityType>& native_type,
                    const std::string_view native_name,
                    const std::uintptr_t native_parent_ptr,
-                   const std::shared_ptr<UnityClass>& native_parent,
                    const std::string_view native_namespace,
                    const std::function<void(std::map<std::string_view, std::shared_ptr<UnityField>>&)>& field_callback,
                    const std::function<void(std::map<std::string_view, std::shared_ptr<UnityMethod>>&)>& method_callback) :
@@ -155,7 +154,6 @@ namespace unity {
             native_parent_ptr{native_parent_ptr},
             native_assembly{native_assembly},
             native_type{native_type},
-            native_parent{native_parent},
             native_name{native_name},
             native_namespace{native_namespace} {
             field_callback(unity_filed);
@@ -328,7 +326,7 @@ namespace unity {
         template<typename Return, typename... Args>
         auto invoke(Args&&... args) -> Return {
             // TODO: use 'std::start_lifetime_as' in c++23 if compiler support
-            return reinterpret_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(native_call_ptr)(std::forward<Args>(args)...);
+            return std::bit_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(native_call_ptr)(std::forward<Args>(args)...);
         }
     };
 
@@ -343,7 +341,7 @@ namespace unity {
         template<typename Return, typename... Args>
         auto invoke_dyn_library(const std::string_view& func_name, Args&&... args) -> std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>> {
             using OptionalResult = std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>>;
-            using FuncPtr = Return(UNITY_CALLING_CONVENTION*)(std::decay_t<Args>...);
+            using FuncPtr = Return(UNITY_CALLING_CONVENTION*)(Args...);
             static std::unordered_map<std::string_view, std::uintptr_t> func_address;
 
             if (module_handle == nullptr) {
@@ -354,9 +352,9 @@ namespace unity {
             if (iterator == func_address.end()) {
                 std::uintptr_t address = 0;
                 #ifdef WINDOWS_MODE
-                address = reinterpret_cast<std::uintptr_t>(GetProcAddress(static_cast<HMODULE>(module_handle), func_name.data()));
+                address = std::bit_cast<std::uintptr_t>(GetProcAddress(static_cast<HMODULE>(module_handle), func_name.data()));
                 #else
-                address = reinterpret_cast<std::uintptr_t>(dlsym(module_handle, func_name.data()));
+                address = std::bit_cast<std::uintptr_t>(dlsym(module_handle, func_name.data()));
                 #endif
 
                 if (address == 0) {
@@ -366,7 +364,7 @@ namespace unity {
                 iterator = func_address.emplace(func_name, address).first;
             }
 
-            auto func = reinterpret_cast<FuncPtr>(iterator->second);
+            auto func = std::bit_cast<FuncPtr>(iterator->second);
             try {
                 if constexpr (std::is_void_v<Return>) {
                     func(std::forward<Args>(args)...);
@@ -418,7 +416,7 @@ namespace unity {
     namespace process {
         namespace impl {
             inline auto try_find_type(void* type_ptr) -> std::shared_ptr<UnityType>& {
-                auto ptr = reinterpret_cast<std::uintptr_t>(type_ptr);
+                auto ptr = std::bit_cast<std::uintptr_t>(type_ptr);
                 const auto iterator = details::unity_types.find(ptr);
                 if (iterator != details::unity_types.end()) {
                     return iterator->second;
@@ -435,25 +433,6 @@ namespace unity {
             inline auto try_load_method_il2cpp() -> void {}
             inline auto try_load_method_mono() -> void {}
             inline auto try_load_method(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {}
-
-            inline auto do_load_field(const std::string_view field_get_name,
-                                      const std::string_view field_get_type,
-                                      const std::string_view field_get_offset,
-                                      void* field_ptr,
-                                      void* class_ptr,
-                                      std::map<std::string_view, std::shared_ptr<UnityField>>& container) -> void {
-                const auto field_name = details::invoke_dyn_library<const char*>(field_get_name, field_ptr);
-                const auto field_type = details::invoke_dyn_library<void*>(field_get_type, field_ptr);
-                const auto field_offset = details::invoke_dyn_library<int>(field_get_offset, field_ptr);
-                auto type = try_find_type(*field_type);
-                const auto field = std::make_shared<UnityField>(reinterpret_cast<std::uintptr_t>(field_ptr),
-                                                                reinterpret_cast<std::uintptr_t>(class_ptr),
-                                                                reinterpret_cast<std::uintptr_t>(*field_type),
-                                                                type,
-                                                                *field_name,
-                                                                *field_offset);
-                container[*field_name] = field;
-            }
 
             inline auto foreach_load_field(const std::string_view class_get_fields,
                                            const std::string_view field_get_name,
@@ -472,7 +451,17 @@ namespace unity {
                     if (field_ptr == nullptr) {
                         continue;
                     }
-                    do_load_field(field_get_name, field_get_type, field_get_offset, field_ptr, class_ptr, container);
+                    const auto field_name = details::invoke_dyn_library<const char*>(field_get_name, field_ptr);
+                    const auto field_type = details::invoke_dyn_library<void*>(field_get_type, field_ptr);
+                    const auto field_offset = details::invoke_dyn_library<int>(field_get_offset, field_ptr);
+                    auto type = try_find_type(*field_type);
+                    const auto field = std::make_shared<UnityField>(std::bit_cast<std::uintptr_t>(field_ptr),
+                                                                    std::bit_cast<std::uintptr_t>(class_ptr),
+                                                                    std::bit_cast<std::uintptr_t>(*field_type),
+                                                                    type,
+                                                                    *field_name,
+                                                                    *field_offset);
+                    container[*field_name] = field;
                 } while (field_ptr != nullptr);
             }
 
@@ -488,6 +477,7 @@ namespace unity {
                                       const std::string_view class_get_name,
                                       const std::string_view class_get_parent,
                                       const std::string_view class_get_namespace,
+                                      const std::string_view class_get_type,
                                       void* class_ptr,
                                       std::map<std::string_view, std::shared_ptr<UnityClass>>& container) -> void {
                 const auto name_opt = details::invoke_dyn_library<const char*>(class_get_name, class_ptr);
@@ -501,13 +491,15 @@ namespace unity {
                 auto field_callback = std::bind(try_load_field, class_ptr, std::placeholders::_1);
                 auto method_callback = std::bind(try_load_method, class_ptr, std::placeholders::_1);
 
-                auto ptr = reinterpret_cast<std::uintptr_t>(class_ptr);
+                const auto class_type = details::invoke_dyn_library<void*>(class_get_type, class_ptr);
+                auto type = try_find_type(*class_type);
+
+                auto ptr = std::bit_cast<std::uintptr_t>(class_ptr);
                 const auto unity_class = std::make_shared<UnityClass>(ptr,
                                                                       assembly,
-                                                                      nullptr,
+                                                                      type,
                                                                       *name_opt,
-                                                                      parent_class ? reinterpret_cast<std::uintptr_t>(*parent_class) : 0,
-                                                                      nullptr,
+                                                                      parent_class ? std::bit_cast<std::uintptr_t>(*parent_class) : 0,
                                                                       name_space_opt ? *name_space_opt : "",
                                                                       field_callback,
                                                                       method_callback);
@@ -522,7 +514,7 @@ namespace unity {
                         continue;
                     }
 
-                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", *class_ptr, container);
+                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", "il2cpp_class_get_type", *class_ptr, container);
                 }
             }
 
@@ -538,7 +530,7 @@ namespace unity {
                         continue;
                     }
 
-                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", *class_ptr, container);
+                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", "mono_class_get_type", *class_ptr, container);
                 }
             }
 
@@ -566,7 +558,7 @@ namespace unity {
                     return;
                 }
                 const auto callback = std::bind(try_load_class, *name_opt, assembly_ptr, *image_opt, std::placeholders::_1);
-                const auto assembly = std::make_shared<UnityAssembly>(*name_opt, reinterpret_cast<std::uintptr_t>(assembly_ptr), callback);
+                const auto assembly = std::make_shared<UnityAssembly>(*name_opt, std::bit_cast<std::uintptr_t>(assembly_ptr), callback);
                 details::unity_assembly[*name_opt] = assembly;
             }
 
