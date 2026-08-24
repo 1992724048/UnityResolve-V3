@@ -96,11 +96,13 @@ namespace unity {
 
     class UnityType final {
         std::uintptr_t native_ptr{};
+        std::uintptr_t native_object{};
         std::string native_name;
         std::size_t native_size{};
     public:
-        UnityType(const std::uintptr_t native_ptr, std::string native_name, const std::size_t native_size) :
+        UnityType(const std::uintptr_t native_ptr, const std::uintptr_t native_object, std::string native_name, const std::size_t native_size) :
             native_ptr{native_ptr},
+            native_object{native_object},
             native_name{std::move(native_name)},
             native_size{native_size} {}
 
@@ -114,6 +116,10 @@ namespace unity {
 
         [[nodiscard]] auto size() const noexcept -> std::size_t {
             return native_size;
+        }
+
+        [[nodiscard]] auto object() const noexcept -> std::uintptr_t {
+            return native_object;
         }
     };
 
@@ -341,7 +347,7 @@ namespace unity {
         template<typename Return, typename... Args>
         auto invoke_dyn_library(const std::string_view& func_name, Args&&... args) -> std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>> {
             using OptionalResult = std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>>;
-            using FuncPtr = Return(UNITY_CALLING_CONVENTION*)(Args...);
+            using FuncPtr = Return(UNITY_CALLING_CONVENTION*)(std::decay_t<Args>...);
             static std::unordered_map<std::string_view, std::uintptr_t> func_address;
 
             if (module_handle == nullptr) {
@@ -423,7 +429,8 @@ namespace unity {
                 }
 
                 const auto type_name = details::invoke_dyn_library<char*>(details::mode == UnityMode::IL2CPP ? "il2cpp_type_get_name" : "mono_type_get_name", type_ptr);
-                const auto type = std::make_shared<UnityType>(ptr, *type_name, 0);
+                const auto type_object = details::invoke_dyn_library<char*>(details::mode == UnityMode::IL2CPP ? "il2cpp_type_get_object" : "mono_type_get_object", type_ptr);
+                const auto type = std::make_shared<UnityType>(ptr, reinterpret_cast<std::uintptr_t>(*type_object), *type_name, 0);
                 if (details::mode == UnityMode::IL2CPP) {
                     details::invoke_dyn_library<void>("il2cpp_free", *type_name);
                 }
@@ -530,7 +537,7 @@ namespace unity {
                         continue;
                     }
 
-                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", "mono_class_get_type", *class_ptr, container);
+                    do_load_class(assembly, "mono_class_get_name", "mono_class_get_parent", "mono_class_get_namespace", "mono_class_get_type", *class_ptr, container);
                 }
             }
 
