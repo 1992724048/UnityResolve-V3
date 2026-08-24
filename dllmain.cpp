@@ -16,13 +16,19 @@ auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 // mono-2.0-bdwgc.dll
                 set_params(unity::UnityMode::IL2CPP, GetModuleHandleW(L"GameAssembly.dll"));
                 unity::update();
-
-                for (auto val : unity::details::unity_assembly | std::views::values) {
-                    TLOG << val->name();
-                    for (auto& unity_class : val->content()) {
-                        TLOG << unity_class->name();
+                std::stringstream ss;
+                for (const auto val : unity::details::unity_assembly | std::views::values) {
+                    ss << "assembly: " << val->name() << '\n';
+                    for (auto unity_class : val->content()) {
+                        ss << "class " << unity_class.lock()->name() << " {\n";
+                        for (auto field : unity_class.lock()->content<unity::UnityField>()) {
+                            const auto f = field.lock();
+                            ss << "\t" << f->type().lock()->name() << ' ' << f->name() << ";\n";
+                        }
+                        ss << "}\n\n";
                     }
                 }
+                DLOG << ss.str();
             }).detach();
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
