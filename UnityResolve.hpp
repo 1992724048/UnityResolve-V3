@@ -488,6 +488,9 @@ namespace unity {
         std::bitset<32> native_flags;
         bool native_is_static{};
 
+        bool native_is_compile{};
+        std::function<std::optional<void*>()> compile_call;
+
         friend auto process::fix_class_depend() -> void;
     public:
         UnityMethod(const std::uintptr_t native_ptr,
@@ -496,15 +499,18 @@ namespace unity {
                     const std::weak_ptr<UnityType>& native_type,
                     const std::string_view& native_name,
                     const std::function<UnityMethodArgs()>& args_callback,
+                    const std::function<std::optional<void*>()>& compile,
                     const std::bitset<32>& native_flags) :
             native_ptr{native_ptr},
             native_call_ptr{native_call_ptr},
             native_class_ptr{native_class_ptr},
             native_type{native_type},
             native_name{native_name},
-            native_flags{native_flags} {
+            native_flags{native_flags},
+            compile_call{compile} {
             native_args = args_callback();
             native_is_static = flags(attributes::MethodAttributes::Static);
+            native_is_compile = !compile;
         }
 
         auto name() const noexcept -> std::string_view {
@@ -515,7 +521,11 @@ namespace unity {
             return native_ptr;
         }
 
-        auto call() const noexcept -> std::uintptr_t {
+        auto call() -> std::uintptr_t {
+            if (native_is_compile) {
+                return native_call_ptr;
+            }
+            compile();
             return native_call_ptr;
         }
 
@@ -542,7 +552,16 @@ namespace unity {
         template<typename Return, typename... Args>
         auto invoke(Args&&... args) -> Return {
             // TODO: use 'std::start_lifetime_as' in c++23 if compiler support
-            return std::bit_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(native_call_ptr)(std::forward<Args>(args)...);
+            return std::bit_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(call())(std::forward<Args>(args)...);
+        }
+    private:
+        auto compile() -> void {
+            const auto result = compile_call();
+            if (!result) {
+                throw std::runtime_error("nullptr");
+            }
+            native_call_ptr = std::bit_cast<std::uintptr_t>(*result);
+            native_is_compile = result.has_value();
         }
     };
 
@@ -839,12 +858,16 @@ namespace unity {
                                        std::multimap<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {
                 auto type = try_find_type(method_type_ptr);
                 auto callback = std::bind(details::mode == UnityMode::IL2CPP ? try_load_args_il2cpp : try_load_args_mono, method_ptr);
+                auto compile = [method_ptr] -> std::optional<void*> {
+                    return details::invoke_dyn_library<void*>("mono_compile_method", method_ptr);
+                };
                 const auto method = std::make_shared<UnityMethod>(std::bit_cast<std::uintptr_t>(method_ptr),
                                                                   std::bit_cast<std::uintptr_t>(method_address),
                                                                   std::bit_cast<std::uintptr_t>(class_ptr),
                                                                   type,
                                                                   name,
                                                                   callback,
+                                                                  compile,
                                                                   flags);
                 container.emplace(name, method);
             }
@@ -898,7 +921,7 @@ namespace unity {
                         continue;
                     }
 
-                    do_load_method(method_ptr, *static_cast<void**>(method_ptr), *type, class_ptr, *flags, *name, container);
+                    do_load_method(method_ptr, nullptr, *type, class_ptr, *flags, *name, container);
                 } while (method_ptr != nullptr);
             }
 
