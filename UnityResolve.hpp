@@ -94,7 +94,7 @@ namespace unity {
         private:
             std::function<Ret(Args...)> func;
         public:
-            auto operator[](const std::size_t address) -> void {
+            auto operator[](const std::uintptr_t address) -> void {
                 this->func = std::bit_cast<Ret(UNITY_CALLING_CONVENTION*)(Args...)>(address);
             }
 
@@ -107,6 +107,72 @@ namespace unity {
             }
         };
 
+        template<typename T, typename C = void>
+        struct Property {
+        private:
+            using GetterFunc = std::conditional_t<std::is_void_v<C>, std::function<T()>, std::function<T(C*)>>;
+            using SetterFunc = std::conditional_t<std::is_void_v<C>, std::function<void(T)>, std::function<void(C*, T)>>;
+            GetterFunc get_;
+            SetterFunc set_;
+        public:
+            Property() = default;
+
+            Property(GetterFunc get, SetterFunc set) :
+                get_{std::move(get)},
+                set_{std::move(set)} {}
+
+            auto operator[](const std::uintptr_t get_addr, const std::uintptr_t set_addr) -> void {
+                if constexpr (std::is_void_v<C>) {
+                    get_ = std::bit_cast<T(UNITY_CALLING_CONVENTION*)()>(get_addr);
+                    set_ = std::bit_cast<void(UNITY_CALLING_CONVENTION*)(T)>(set_addr);
+                } else {
+                    get_ = std::bit_cast<T(UNITY_CALLING_CONVENTION*)(C*)>(get_addr);
+                    set_ = std::bit_cast<void(UNITY_CALLING_CONVENTION*)(C*, T)>(set_addr);
+                }
+            }
+
+            auto get() -> T requires std::is_void_v<C> {
+                return get_();
+            }
+
+            auto set(T value) -> void requires std::is_void_v<C> {
+                set_(std::move(value));
+            }
+
+            auto get(C* instance) -> T requires (!std::is_void_v<C>) {
+                return get_(instance);
+            }
+
+            auto set(C* instance, T value) -> void requires (!std::is_void_v<C>) {
+                set_(instance, std::move(value));
+            }
+
+            auto function() const -> std::pair<const GetterFunc&, const SetterFunc&> {
+                return {get_, set_};
+            }
+        };
+
+        namespace helper {
+            template<typename T>
+            struct PropertyHelper {
+            private:
+                std::function<T()> get_;
+                std::function<void(T)> set_;
+            public:
+                PropertyHelper(std::function<T()> get, std::function<void(T)> set) :
+                    get_{std::move(get)},
+                    set_{std::move(set)} {}
+
+                auto get() -> T {
+                    return get_();
+                }
+
+                auto set(T value) -> void {
+                    set_(value);
+                }
+            };
+        } // namespace helper
+
         struct Class {
             template<typename T>
             auto operator[](const Field<T>& field) -> T& {
@@ -115,7 +181,26 @@ namespace unity {
 
             template<typename Ret, typename... Args>
             auto operator[](Method<Ret, Args...>& method) {
-                return std::bind_front(method.function(), this);
+                if constexpr (sizeof...(Args) > 0) {
+                    using FirstArg = std::tuple_element_t<0, std::tuple<Args...>>;
+                    if constexpr (std::is_pointer_v<FirstArg>) {
+                        return std::bind_front(method.function(), static_cast<FirstArg>(this));
+                    } else {
+                        static_assert(std::is_pointer_v<FirstArg>, "Method's first argument must be a pointer type for member-like binding");
+                    }
+                } else {
+                    static_assert(sizeof...(Args) > 0, "Method requires at least one argument (the object pointer)");
+                }
+            }
+
+            template<typename T, typename C>
+            auto operator[](Property<T, C>& property) -> helper::PropertyHelper<T> {
+                auto [get_func, set_func] = property.function();
+                if constexpr (std::is_void_v<C>) {
+                    return helper::PropertyHelper<T>{std::move(get_func), std::move(set_func)};
+                } else {
+                    return helper::PropertyHelper<T>{std::bind_front(get_func, static_cast<C*>(this)), std::bind_front(set_func, static_cast<C*>(this))};
+                }
             }
         };
     } // namespace access

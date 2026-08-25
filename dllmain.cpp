@@ -4,6 +4,31 @@
 #include "UnityResolve.hpp"
 #include "stdpp/logger.hpp"
 
+UNITY_ACCESS;
+
+namespace {
+    class Player : public Class {
+    public:
+        inline static Field<int> hp;
+        inline static Method<void, Player*, int> set_hp;
+        inline static Method<void, int> set_hp_static;
+        inline static Property<int, Player> hp_access;
+    };
+
+    auto use() -> void {
+        Player::hp[0x04];
+        Player::set_hp[0x07FFFFF];
+        Player::hp_access[0x0400000, 0x410000];
+
+        Player player;
+        player[player.hp] = 114514;
+        player[player.set_hp](114514);
+        Player::set_hp_static(114514);
+        player[player.hp_access].set(114514);
+        player[Player::hp_access].get();
+    }
+}
+
 auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) -> BOOL {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
