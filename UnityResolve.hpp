@@ -367,10 +367,12 @@ namespace unity {
             param_vec{std::move(params)} {}
 
         UnityMethodArgs(UnityMethodArgs&& other) noexcept :
-            args(std::move(other.args)) {}
+            args(std::move(other.args)),
+            param_vec(std::move(other.param_vec)) {}
 
         auto operator=(UnityMethodArgs&& other) noexcept -> UnityMethodArgs& {
             args = std::move(other.args);
+            param_vec = std::move(other.param_vec);
             return *this;
         }
 
@@ -531,7 +533,7 @@ namespace unity {
         }
 
         template<ClassMember T>
-        auto operator[](util::TypeIdentity<T> /* unused */, const std::string_view name, const std::vector<std::string_view> args = {}) const -> std::optional<std::weak_ptr<T>> {
+        auto operator[](util::TypeIdentity<T> /* unused */, const std::string_view name, const std::vector<std::string_view> args_type = {}) const -> std::optional<std::weak_ptr<T>> {
             if constexpr (std::is_same_v<T, UnityField>) {
                 return util::try_find(mutex, name, unity_filed);
             } else {
@@ -540,10 +542,10 @@ namespace unity {
                 if (range.first == range.second) {
                     return std::nullopt;
                 }
-                if (args.empty()) {
+                if (args_type.empty()) {
                     return range.first->second;
                 }
-                return find_with_args(args, std::ranges::subrange(range.first, range.second));
+                return find_with_args(args_type, std::ranges::subrange(range.first, range.second));
             }
         }
     private:
