@@ -33,10 +33,9 @@
 #endif
 
 #define UTYPE(type) unity::details::TypeIdentity<type>{}
+#define UNITY_ACCESS using namespace unity::access;
 
 namespace unity {
-    using namespace std::chrono_literals;
-
     enum class UnityMode : std::uint8_t { IL2CPP, MONO };
 
     class UnityType;
@@ -45,6 +44,80 @@ namespace unity {
     class UnityMethod;
     class UnityAssembly;
     class UnityMethodArgs;
+
+    namespace access {
+        template<std::size_t Offset, typename T>
+        struct AT {
+            operator T&() {
+                return *ptr();
+            }
+
+            operator const T&() {
+                return *ptr();
+            }
+
+            auto get() -> T& {
+                return *ptr();
+            }
+
+            auto ptr() -> T* {
+                return std::bit_cast<T*>(std::bit_cast<std::uintptr_t>(this) + Offset);
+            }
+        };
+
+        template<std::size_t Offset, typename Func>
+        struct FN {
+            template<typename... Args>
+            auto operator()(Args&&... args) const -> decltype(auto) {
+                auto func = std::bit_cast<Func*>(std::bit_cast<std::uintptr_t>(this) + Offset);
+                return func(std::forward<Args>(args)...);
+            }
+        };
+
+        template<typename T>
+        struct Field {
+        private:
+            std::size_t offset_{};
+        public:
+            auto operator[](const std::size_t offset) -> void {
+                this->offset_ = offset;
+            }
+
+            [[nodiscard]] auto offset() const -> std::size_t {
+                return offset_;
+            }
+        };
+
+        template<typename Ret, typename... Args>
+        struct Method {
+        private:
+            std::function<Ret(Args...)> func;
+        public:
+            auto operator[](const std::size_t address) -> void {
+                this->func = std::bit_cast<Ret(UNITY_CALLING_CONVENTION*)(Args...)>(address);
+            }
+
+            auto operator()(Args&&... args) -> Ret {
+                return func(std::forward<Args>(args)...);
+            }
+
+            auto function() const -> const std::function<Ret(Args...)>& {
+                return func;
+            }
+        };
+
+        struct Class {
+            template<typename T>
+            auto operator[](const Field<T>& field) -> T& {
+                return *std::bit_cast<T*>(std::bit_cast<std::uintptr_t>(this) + field.offset());
+            }
+
+            template<typename Ret, typename... Args>
+            auto operator[](Method<Ret, Args...>& method) {
+                return std::bind_front(method.function(), this);
+            }
+        };
+    } // namespace access
 
     namespace util {
         template<typename T>
@@ -62,6 +135,96 @@ namespace unity {
             return it->second;
         }
     } // namespace util
+
+    namespace attributes {
+        // https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Reflection/TypeAttributes.cs
+        enum class TypeAttributes {
+            VisibilityMask     = 0x00000007,
+            NotPublic          = 0x00000000,
+            Public             = 0x00000001,
+            NestedPublic       = 0x00000002,
+            NestedPrivate      = 0x00000003,
+            NestedFamily       = 0x00000004,
+            NestedAssembly     = 0x00000005,
+            NestedFamANDAssem  = 0x00000006,
+            NestedFamORAssem   = 0x00000007,
+            LayoutMask         = 0x00000018,
+            AutoLayout         = 0x00000000,
+            SequentialLayout   = 0x00000008,
+            ExplicitLayout     = 0x00000010,
+            ExtendedLayout     = 0x00000018,
+            ClassSemanticsMask = 0x00000020,
+            Class              = 0x00000000,
+            Interface          = 0x00000020,
+            Abstract           = 0x00000080,
+            Sealed             = 0x00000100,
+            SpecialName        = 0x00000400,
+            Import             = 0x00001000,
+            Serializable       = 0x00002000,
+            WindowsRuntime     = 0x00004000,
+            StringFormatMask   = 0x00030000,
+            AnsiClass          = 0x00000000,
+            UnicodeClass       = 0x00010000,
+            AutoClass          = 0x00020000,
+            CustomFormatClass  = 0x00030000,
+            CustomFormatMask   = 0x00C00000,
+            BeforeFieldInit    = 0x00100000,
+            RTSpecialName      = 0x00000800,
+            HasSecurity        = 0x00040000,
+            ReservedMask       = 0x00040800,
+        };
+
+        // https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Reflection/MethodAttributes.cs
+        enum class MethodAttributes : std::uint16_t {
+            MemberAccessMask      = 0x0007,
+            PrivateScope          = 0x0000,
+            Private               = 0x0001,
+            FamANDAssem           = 0x0002,
+            Assembly              = 0x0003,
+            Family                = 0x0004,
+            FamORAssem            = 0x0005,
+            Public                = 0x0006,
+            Static                = 0x0010,
+            Final                 = 0x0020,
+            Virtual               = 0x0040,
+            HideBySig             = 0x0080,
+            CheckAccessOnOverride = 0x0200,
+            VtableLayoutMask      = 0x0100,
+            ReuseSlot             = 0x0000,
+            NewSlot               = 0x0100,
+            Abstract              = 0x0400,
+            SpecialName           = 0x0800,
+            PinvokeImpl           = 0x2000,
+            UnmanagedExport       = 0x0008,
+            RTSpecialName         = 0x1000,
+            HasSecurity           = 0x4000,
+            RequireSecObject      = 0x8000,
+            ReservedMask          = 0xd000,
+        };
+
+        // https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Reflection/FieldAttributes.cs
+        enum class FieldAttributes : std::uint16_t {
+            FieldAccessMask = 0x0007,
+            PrivateScope    = 0x0000,
+            Private         = 0x0001,
+            FamANDAssem     = 0x0002,
+            Assembly        = 0x0003,
+            Family          = 0x0004,
+            FamORAssem      = 0x0005,
+            Public          = 0x0006,
+            Static          = 0x0010,
+            InitOnly        = 0x0020,
+            Literal         = 0x0040,
+            NotSerialized   = 0x0080,
+            SpecialName     = 0x0200,
+            PinvokeImpl     = 0x2000,
+            RTSpecialName   = 0x0400,
+            HasFieldMarshal = 0x1000,
+            HasDefault      = 0x8000,
+            HasFieldRVA     = 0x0100,
+            ReservedMask    = 0x9500,
+        };
+    } // namespace attributes
 
     class UnityAssembly final {
         std::uintptr_t native_ptr{};
@@ -85,7 +248,7 @@ namespace unity {
         }
 
         auto content() const noexcept -> auto {
-            return unity_class | std::views::values | std::views::transform([](std::shared_ptr<UnityClass> ptr)-> std::weak_ptr<UnityClass> {
+            return unity_class | std::views::values | std::views::transform([](const std::shared_ptr<UnityClass>& ptr)-> std::weak_ptr<UnityClass> {
                 return ptr;
             });
         }
@@ -133,7 +296,6 @@ namespace unity {
     class UnityClass final {
         std::uintptr_t native_ptr{};
         std::uintptr_t native_parent_ptr{};
-        std::uintptr_t native_type_ptr{};
         std::weak_ptr<UnityAssembly> native_assembly;
         std::weak_ptr<UnityType> native_type;
         std::weak_ptr<UnityClass> native_parent;
@@ -155,6 +317,7 @@ namespace unity {
                    const std::string_view native_name,
                    const std::uintptr_t native_parent_ptr,
                    const std::string_view native_namespace,
+                   const std::bitset<32> native_flags,
                    const std::function<void(std::map<std::string_view, std::shared_ptr<UnityField>>&)>& field_callback,
                    const std::function<void(std::map<std::string_view, std::shared_ptr<UnityMethod>>&)>& method_callback) :
             native_ptr{native_ptr},
@@ -162,7 +325,8 @@ namespace unity {
             native_assembly{native_assembly},
             native_type{native_type},
             native_name{native_name},
-            native_namespace{native_namespace} {
+            native_namespace{native_namespace},
+            native_flags{native_flags} {
             field_callback(unity_filed);
             method_callback(unity_method);
         }
@@ -179,8 +343,8 @@ namespace unity {
             return native_parent;
         }
 
-        auto flags() const noexcept -> std::bitset<32> {
-            return native_flags;
+        auto flags(attributes::TypeAttributes attributes) const noexcept -> bool {
+            return native_flags.test(static_cast<uint32_t>(attributes));
         }
 
         auto name_space() const noexcept -> std::string_view {
@@ -199,13 +363,13 @@ namespace unity {
 
         template<ClassMember T>
         auto content() const -> auto {
-            return get_container<T>() | std::views::values | std::views::transform([](std::shared_ptr<T> ptr)-> std::weak_ptr<T> {
+            return get_container<T>() | std::views::values | std::views::transform([](const std::shared_ptr<T>& ptr)-> std::weak_ptr<T> {
                 return ptr;
             });
         }
 
         template<ClassMember T>
-        auto operator[](util::TypeIdentity<T> /* unused */, const std::string_view name) const -> std::optional<std::weak_ptr<T>> {
+        auto operator[](util::TypeIdentity<T> /* unused */, const std::string_view name, std::vector<std::pair<std::string_view, std::string_view>> args) const -> std::optional<std::weak_ptr<T>> {
             const auto& container = get_container<T>();
             return util::try_find(mutex, name, container);
         }
@@ -223,7 +387,6 @@ namespace unity {
     class UnityField final {
         std::uintptr_t native_ptr{};
         std::uintptr_t native_class_ptr{};
-        std::uintptr_t native_type_ptr{};
 
         std::weak_ptr<UnityClass> native_class;
         std::weak_ptr<UnityType> native_type;
@@ -238,17 +401,17 @@ namespace unity {
     public:
         UnityField(const std::uintptr_t native_ptr,
                    const std::uintptr_t native_class_ptr,
-                   const std::uintptr_t native_type_ptr,
                    const std::weak_ptr<UnityType>& native_type,
                    const std::string_view& native_name,
-                   const std::size_t native_offset) :
+                   const std::size_t native_offset,
+                   const std::bitset<32> native_flags) :
             native_ptr{native_ptr},
             native_class_ptr{native_class_ptr},
-            native_type_ptr{native_type_ptr},
             native_type{native_type},
             native_name{native_name},
-            native_offset{native_offset} {
-            native_is_static = native_offset < 0;
+            native_offset{native_offset},
+            native_flags{native_flags} {
+            native_is_static = flags(attributes::FieldAttributes::Static);
         }
 
         [[nodiscard]] auto name() const noexcept -> std::string_view {
@@ -271,8 +434,8 @@ namespace unity {
             return native_class;
         }
 
-        auto flags() const noexcept -> std::bitset<32> {
-            return native_flags;
+        [[nodiscard]] auto flags(attributes::FieldAttributes attributes) const noexcept -> bool {
+            return native_flags.test(static_cast<uint32_t>(attributes));
         }
 
         [[nodiscard]] auto is_static() const noexcept -> bool {
@@ -287,7 +450,7 @@ namespace unity {
         UnityMethodArgs() = default;
 
         explicit UnityMethodArgs(const std::map<std::string_view, std::shared_ptr<UnityType>>& types) :
-            args(types | std::views::transform([](const auto& pair) {
+            args(types | std::views::transform([](const auto& pair) -> auto {
                 return std::pair{pair.first, std::weak_ptr<UnityType>(pair.second)};
             }) | std::ranges::to<std::map>()) {}
 
@@ -311,7 +474,6 @@ namespace unity {
     class UnityMethod final {
         std::uintptr_t native_ptr{};
         std::uintptr_t native_call_ptr{};
-        std::uintptr_t native_type_ptr{};
         std::uintptr_t native_class_ptr{};
 
         std::weak_ptr<UnityClass> native_class;
@@ -327,7 +489,6 @@ namespace unity {
     public:
         UnityMethod(const std::uintptr_t native_ptr,
                     const std::uintptr_t native_call_ptr,
-                    const std::uintptr_t native_type_ptr,
                     const std::uintptr_t native_class_ptr,
                     const std::weak_ptr<UnityType>& native_type,
                     const std::string_view& native_name,
@@ -335,15 +496,12 @@ namespace unity {
                     const std::bitset<32>& native_flags) :
             native_ptr{native_ptr},
             native_call_ptr{native_call_ptr},
-            native_type_ptr{native_type_ptr},
             native_class_ptr{native_class_ptr},
             native_type{native_type},
             native_name{native_name},
             native_flags{native_flags} {
             native_args = args_callback();
-            if (native_flags[1] && native_flags[3]) {
-                native_is_static = true;
-            }
+            native_is_static = flags(attributes::MethodAttributes::Static);
         }
 
         auto name() const noexcept -> std::string_view {
@@ -366,8 +524,8 @@ namespace unity {
             return native_class;
         }
 
-        auto flags() const noexcept -> std::bitset<32> {
-            return native_flags;
+        auto flags(attributes::MethodAttributes attributes) const noexcept -> bool {
+            return native_flags.test(static_cast<uint32_t>(attributes));
         }
 
         auto is_static() const noexcept -> bool {
@@ -439,6 +597,7 @@ namespace unity {
         inline auto do_thread_attach_detach(const std::string_view il2cpp_name, const std::string_view mono_name, const std::string_view jit_name) -> bool {
             const std::string_view call_name = auto_select(il2cpp_name, mono_name);
             if (mode == UnityMode::IL2CPP) {
+                using namespace std::chrono_literals;
                 while (!invoke_dyn_library<bool>("il2cpp_is_vm_thread", nullptr)) {
                     std::this_thread::sleep_for(100ms);
                 }
@@ -544,7 +703,6 @@ namespace unity {
                 auto callback = std::bind(details::mode == UnityMode::IL2CPP ? try_load_args_il2cpp : try_load_args_mono, method_ptr);
                 const auto method = std::make_shared<UnityMethod>(std::bit_cast<std::uintptr_t>(method_ptr),
                                                                   std::bit_cast<std::uintptr_t>(method_address),
-                                                                  std::bit_cast<std::uintptr_t>(method_type_ptr),
                                                                   std::bit_cast<std::uintptr_t>(class_ptr),
                                                                   type,
                                                                   name,
@@ -618,6 +776,7 @@ namespace unity {
                                            const std::string_view field_get_name,
                                            const std::string_view field_get_type,
                                            const std::string_view field_get_offset,
+                                           const std::string_view field_get_flags,
                                            void* class_ptr,
                                            std::map<std::string_view, std::shared_ptr<UnityField>>& container) -> void {
                 void* iter{nullptr};
@@ -634,27 +793,23 @@ namespace unity {
                     const auto field_name = details::invoke_dyn_library<const char*>(field_get_name, field_ptr);
                     const auto field_type = details::invoke_dyn_library<void*>(field_get_type, field_ptr);
                     const auto field_offset = details::invoke_dyn_library<int>(field_get_offset, field_ptr);
+                    const auto field_flags = details::invoke_dyn_library<int>(field_get_flags, field_ptr);
 
                     if (!field_name || !field_type || !field_offset) {
                         continue;
                     }
 
                     auto type = try_find_type(*field_type);
-                    const auto field = std::make_shared<UnityField>(std::bit_cast<std::uintptr_t>(field_ptr),
-                                                                    std::bit_cast<std::uintptr_t>(class_ptr),
-                                                                    std::bit_cast<std::uintptr_t>(*field_type),
-                                                                    type,
-                                                                    *field_name,
-                                                                    *field_offset);
+                    const auto field = std::make_shared<UnityField>(std::bit_cast<std::uintptr_t>(field_ptr), std::bit_cast<std::uintptr_t>(class_ptr), type, *field_name, *field_offset, *field_flags);
                     container[*field_name] = field;
                 } while (field_ptr != nullptr);
             }
 
             inline auto try_load_field(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityField>>& container) -> void {
                 if (details::mode == UnityMode::IL2CPP) {
-                    foreach_load_field("il2cpp_class_get_fields", "il2cpp_field_get_name", "il2cpp_field_get_type", "il2cpp_field_get_offset", class_ptr, container);
+                    foreach_load_field("il2cpp_class_get_fields", "il2cpp_field_get_name", "il2cpp_field_get_type", "il2cpp_field_get_offset", "il2cpp_field_get_flags", class_ptr, container);
                 } else {
-                    foreach_load_field("mono_class_get_fields", "mono_field_get_name", "mono_field_get_type", "mono_field_get_offset", class_ptr, container);
+                    foreach_load_field("mono_class_get_fields", "mono_field_get_name", "mono_field_get_type", "mono_field_get_offset", "mono_field_get_flags", class_ptr, container);
                 }
             }
 
@@ -663,6 +818,7 @@ namespace unity {
                                       const std::string_view class_get_parent,
                                       const std::string_view class_get_namespace,
                                       const std::string_view class_get_type,
+                                      const std::string_view class_get_flags,
                                       void* class_ptr,
                                       std::map<std::string_view, std::shared_ptr<UnityClass>>& container) -> void {
                 const auto name_opt = details::invoke_dyn_library<const char*>(class_get_name, class_ptr);
@@ -677,6 +833,7 @@ namespace unity {
                 auto method_callback = std::bind(try_load_method, class_ptr, std::placeholders::_1);
 
                 const auto class_type = details::invoke_dyn_library<void*>(class_get_type, class_ptr);
+                const auto class_flags = details::invoke_dyn_library<int>(class_get_flags, class_ptr);
                 auto type = try_find_type(*class_type);
 
                 auto ptr = std::bit_cast<std::uintptr_t>(class_ptr);
@@ -685,7 +842,8 @@ namespace unity {
                                                                       type,
                                                                       *name_opt,
                                                                       parent_class ? std::bit_cast<std::uintptr_t>(*parent_class) : 0,
-                                                                      name_space_opt ? *name_space_opt : "",
+                                                                      *name_space_opt,
+                                                                      *class_flags,
                                                                       field_callback,
                                                                       method_callback);
                 details::unity_classes[ptr] = container[*name_opt] = unity_class;
@@ -699,7 +857,7 @@ namespace unity {
                         continue;
                     }
 
-                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", "il2cpp_class_get_type", *class_ptr, container);
+                    do_load_class(assembly, "il2cpp_class_get_name", "il2cpp_class_get_parent", "il2cpp_class_get_namespace", "il2cpp_class_get_type", "il2cpp_class_get_flags", *class_ptr, container);
                 }
             }
 
@@ -715,7 +873,7 @@ namespace unity {
                         continue;
                     }
 
-                    do_load_class(assembly, "mono_class_get_name", "mono_class_get_parent", "mono_class_get_namespace", "mono_class_get_type", *class_ptr, container);
+                    do_load_class(assembly, "mono_class_get_name", "mono_class_get_parent", "mono_class_get_namespace", "mono_class_get_type", "mono_class_get_flags", *class_ptr, container);
                 }
             }
 
@@ -779,7 +937,9 @@ namespace unity {
             for (const auto& assembly : details::unity_assembly | std::views::values) {
                 for (const auto& unity_class : assembly->content()) {
                     const auto class_ptr = unity_class.lock();
-                    class_ptr->native_parent = details::unity_classes[class_ptr->native_parent_ptr];
+                    if (class_ptr->native_parent_ptr != 0) {
+                        class_ptr->native_parent = details::unity_classes[class_ptr->native_parent_ptr];
+                    }
                     for (const auto& unity_field : class_ptr->unity_filed | std::views::values) {
                         unity_field->native_class = details::unity_classes[unity_field->native_class_ptr];
                     }
@@ -828,6 +988,10 @@ namespace unity {
     }
 
     namespace api {
+        class String {};
+
+        class Array {};
+
         class Object {};
 
         class Transform {};

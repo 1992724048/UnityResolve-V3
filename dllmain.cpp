@@ -16,6 +16,7 @@ auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 // mono-2.0-bdwgc.dll
                 set_params(unity::UnityMode::IL2CPP, GetModuleHandleW(L"GameAssembly.dll"));
                 unity::update();
+
                 std::stringstream ss;
                 for (const auto val : unity::details::unity_assembly | std::views::values) {
                     ss << "assembly: " << val->name() << '\n';
