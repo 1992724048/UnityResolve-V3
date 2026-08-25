@@ -16,9 +16,25 @@ namespace {
     };
 
     auto use() -> void {
-        Player::hp[0x04];
-        Player::set_hp[0x07FFFFF];
-        Player::hp_access[0x0400000, 0x410000];
+        auto assembly_result = unity::find_assembly("Test.dll");
+        auto& assembly = *assembly_result->lock();
+
+        auto class_result = assembly["Player"];
+        auto& class_ = *class_result->lock();
+
+        auto& hp_field = *class_[UTYPE(unity::UnityField), "hp"]->lock();
+
+        auto method = UTYPE(unity::UnityMethod);
+
+        auto& hp_set_field = *class_[method, "set_hp"]->lock();
+        auto& hp_static_field = *class_[method, "set_hp_static"]->lock();
+        auto& hp_field_set = *class_[method, "hp_access_set"]->lock();
+        auto& hp_field_get = *class_[method, "hp_access_get"]->lock();
+
+        Player::hp[hp_field.offset()];
+        Player::set_hp[hp_set_field.call()];
+        Player::set_hp_static[hp_static_field.call()];
+        Player::hp_access[hp_field_get.call(), hp_field_set.call()];
 
         Player player;
         player[player.hp] = 114514;

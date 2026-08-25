@@ -33,7 +33,7 @@
 #define OTHERS_MODE
 #endif
 
-#define UTYPE(type) unity::details::TypeIdentity<type>{}
+#define UTYPE(type) unity::util::TypeIdentity<type>{}
 #define UNITY_ACCESS using namespace unity::access;
 
 namespace unity {
@@ -513,6 +513,10 @@ namespace unity {
 
         auto ptr() const noexcept -> std::uintptr_t {
             return native_ptr;
+        }
+
+        auto call() const noexcept -> std::uintptr_t {
+            return native_call_ptr;
         }
 
         auto type() const noexcept -> std::weak_ptr<UnityType> {
