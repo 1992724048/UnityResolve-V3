@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <bitset>
 #include <chrono>
+#include <codecvt>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -94,6 +95,12 @@ namespace unity {
         private:
             std::function<Ret(Args...)> func;
         public:
+            Method() = default;
+
+            Method(const std::uintptr_t address) {
+                operator[](address);
+            }
+
             auto operator[](const std::uintptr_t address) -> void {
                 this->func = std::bit_cast<Ret(UNITY_CALLING_CONVENTION*)(Args...)>(address);
             }
@@ -344,6 +351,10 @@ namespace unity {
         }
     };
 
+    namespace api {
+        class Type;
+    }
+
     class UnityType final {
         std::uintptr_t native_ptr{};
         std::uintptr_t native_object{};
@@ -368,8 +379,8 @@ namespace unity {
             return native_size;
         }
 
-        [[nodiscard]] auto object() const noexcept -> std::uintptr_t {
-            return native_object;
+        [[nodiscard]] auto type() const noexcept -> api::Type* {
+            return std::bit_cast<api::Type*>(native_object);
         }
     };
 
@@ -698,6 +709,9 @@ namespace unity {
         inline std::map<std::uintptr_t, std::shared_ptr<UnityType>> unity_types;
         inline std::map<std::uintptr_t, std::weak_ptr<UnityClass>> unity_classes;
 
+        inline auto method = UTYPE(UnityMethod);
+        inline auto field = UTYPE(UnityField);
+
         template<typename Return, typename... Args>
         auto invoke_dyn_library(const std::string_view& func_name, Args&&... args) -> std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>> {
             using OptionalResult = std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>>;
@@ -772,6 +786,56 @@ namespace unity {
                 return true;
             }
             return false;
+        }
+
+        inline auto find_assembly_impl(const std::string_view name) -> std::optional<std::weak_ptr<UnityAssembly>> {
+            if (!unity_assembly.contains(name)) {
+                return std::nullopt;
+            }
+            return unity_assembly[name];
+        }
+
+        inline auto try_find_class(const std::string_view assembly_name, const std::string_view class_name) -> std::optional<std::weak_ptr<UnityClass>> {
+            const auto assembly_result = find_assembly_impl(assembly_name);
+            if (!assembly_result) {
+                return std::nullopt;
+            }
+            const auto& assembly = *assembly_result->lock();
+            return assembly[class_name];
+        }
+
+        template<typename Ret, typename... Args>
+        auto try_find_method(const std::string_view assembly_name, const std::string_view class_name, const std::string_view method_name, const std::vector<std::string_view> args = {}) -> access::Method<Ret, Args...> {
+            const auto class_result = try_find_class(assembly_name, class_name);
+            if (!class_result) {
+                return {0x0};
+            }
+            const auto& class_ = *class_result->lock();
+            const auto method = class_[details::method, method_name, args];
+            if (!method) {
+                return {0x0};
+            }
+            return {method->lock()->call()};
+        }
+
+        template<typename T>
+        auto new_gc_handle(T* obj, bool pinned = true) -> std::shared_ptr<T> {
+            if (obj == nullptr) {
+                return nullptr;
+            }
+
+            std::uint32_t handle = 0;
+            auto result = details::invoke_dyn_library<uint32_t>(mode == UnityMode::IL2CPP ? "il2cpp_gchandle_new" : "mono_gchandle_new", obj, pinned);
+            if (result) {
+                handle = *result;
+            }
+            if (handle == 0) {
+                return nullptr;
+            }
+            return std::shared_ptr<T>(obj,
+                                      [handle](T* /*ptr*/) {
+                                          details::invoke_dyn_library<void>(mode == UnityMode::IL2CPP ? "il2cpp_gchandle_free" : "mono_gchandle_free", handle);
+                                      });
         }
     } // namespace details
 
@@ -1142,19 +1206,191 @@ namespace unity {
     }
 
     inline auto find_assembly(const std::string_view name) -> std::optional<std::weak_ptr<UnityAssembly>> {
-        if (!details::unity_assembly.contains(name)) {
-            return std::nullopt;
-        }
-        return details::unity_assembly[name];
+        return details::find_assembly_impl(name);
     }
 
     namespace api {
-        class String {};
+        UNITY_ACCESS;
 
-        class Array {};
+        class String;
+        class Type;
 
-        class Object {};
+        class Object : Class {
+            union {
+                void* this_{nullptr};
+                void* vtable;
+            } il2cpp_class;
 
-        class Transform {};
+            struct MonitorData* monitor{nullptr};
+        public:
+            auto get_type() -> Type* {
+                static auto func = details::try_find_method<Type*, Object*>("mscorlib.dll", "Object", "GetType");
+                return func(this);
+            }
+
+            auto to_string() -> String* {
+                static auto func = details::try_find_method<String*, Object*>("mscorlib.dll", "Object", "ToString");
+                return func(this);
+            }
+
+            auto get_hash_code() -> int {
+                static auto func = details::try_find_method<int, Object*>("mscorlib.dll", "Object", "GetHashCode");
+                return func(this);
+            }
+        };
+
+        class Type {
+        public:
+            auto is_enum() -> bool {
+                static auto func = details::try_find_method<bool, Type*>("mscorlib.dll", "Type", "get_IsEnum");
+                return func(this);
+            }
+        };
+
+        class String : Class, public Object {
+            std::int32_t length{0};
+            wchar_t wchar_array[1]{};
+        public:
+            auto local() const -> std::string {
+                static std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+                return converter.to_bytes(wchar_array);
+            }
+
+            operator std::string() const {
+                return local();
+            }
+
+            auto size() const -> std::int32_t {
+                return length;
+            }
+
+            auto clear() -> void {
+                std::memset(wchar_array, 0x00, length);
+            }
+
+            auto operator[](const uint32_t index) -> wchar_t {
+                return wchar_array[index];
+            }
+
+            auto operator[](const uint32_t index) const -> wchar_t {
+                return wchar_array[index];
+            }
+
+            static auto new_str(const std::string& str) -> std::shared_ptr<String> {
+                if (details::mode == UnityMode::IL2CPP) {
+                    return details::new_gc_handle<String>(*details::invoke_dyn_library<String*>("il2cpp_string_new", str.data()));
+                }
+                return details::new_gc_handle<String>(*details::invoke_dyn_library<String*>("mono_string_new", details::unity_domain, str.data()));
+            }
+        };
+
+        template<typename T, std::size_t Dim = 1>
+        class Array : Class, public Object {
+            struct {
+                std::size_t length;
+                std::int32_t lower_bound;
+            }* il2cpp_array_bounds{nullptr};
+
+            std::size_t max_length{0};
+            T content[1]{};
+        public:
+            auto bounds() const -> std::array<size_t, Dim> {
+                std::array<size_t, Dim> extents;
+                if constexpr (Dim == 1) {
+                    extents[0] = max_length;
+                } else {
+                    for (int i = 0; i < Dim; ++i) {
+                        extents[i] = il2cpp_array_bounds[i].length;
+                    }
+                }
+                return extents;
+            }
+
+            auto size() const -> std::size_t {
+                return max_length;
+            }
+
+            auto local() -> std::vector<T> {
+                return std::vector<T>(&content[0], &content[0] + max_length);
+            }
+
+            auto span() -> std::span<T> {
+                return std::span<T>(&content[0], max_length);
+            }
+
+            auto operator[](const uint32_t index) -> T& {
+                return content[index];
+            }
+
+            auto operator[](const uint32_t index) const -> const T& {
+                return content[index];
+            }
+
+            auto resize(std::int32_t size) -> void {
+                static auto func = details::try_find_method<void, Array*, std::int32_t>("mscorlib.dll", "Array", "Resize");
+                return func(this, size);
+            }
+
+            static auto new_arr(const std::shared_ptr<UnityClass>& class_, std::size_t size) -> std::shared_ptr<Array> {
+                if (details::mode == UnityMode::IL2CPP) {
+                    return details::new_gc_handle<Array>(*details::invoke_dyn_library<Array*>("il2cpp_array_new", class_->ptr(), size));
+                }
+                return details::new_gc_handle<Array>(*details::invoke_dyn_library<Array*>("mono_array_new", details::unity_domain, class_->ptr(), size));
+            }
+        };
+
+        template<typename T>
+        class List : Class, public Object {
+            Array<T>* list{};
+            std::int32_t size{};
+            std::int32_t version{};
+            struct Il2CppObject* sync_root{nullptr};
+        public:
+            auto local() -> std::list<T> {
+                return list->local() | std::ranges::to<std::list>();
+            }
+
+            auto span() -> std::span<T> {
+                return list->span();
+            }
+        };
+
+        template<typename TKey, typename TValue>
+        class Dictionary : Class, public Object {
+            struct Entry {
+                std::int32_t hash_code;
+                std::int32_t next;
+                TKey key;
+                TValue value;
+            };
+
+            Array<std::int32_t>* buckets{nullptr};
+            Array<Entry>* entries{nullptr};
+            std::int32_t count{0};
+            std::int32_t version{0};
+            std::int32_t free_list{-1};
+            std::int32_t free_count{0};
+            Il2CppObject* comparer{nullptr};
+        public:
+            auto size() const -> std::size_t {
+                return static_cast<std::size_t>(count);
+            }
+
+            auto local() const -> std::unordered_map<TKey, TValue> {
+                std::unordered_map<TKey, TValue> map;
+                if (entries == nullptr) {
+                    return map;
+                }
+
+                for (const Entry& entry : entries->span()) {
+                    if (entry.hash_code >= 0) {
+                        map[entry.key] = entry.value;
+                    }
+                }
+                return map;
+            }
+        };
+
+        class Transform : Class {};
     } // namespace api
 } // namespace unity
