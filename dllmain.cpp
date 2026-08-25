@@ -25,6 +25,15 @@ auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                             const auto f = field.lock();
                             ss << "\t" << f->type().lock()->name() << ' ' << f->name() << ";\n";
                         }
+                        ss << '\n';
+                        for (auto method : unity_class.lock()->content<unity::UnityMethod>()) {
+                            const auto m = method.lock();
+                            ss << "\t" << m->type().lock()->name() << ' ' << m->name() << "(";
+                            for (auto& [name, type] : m->args().map()) {
+                                ss << type.lock()->name() << " " << name << ", ";
+                            }
+                            ss << ");\n";
+                        }
                         ss << "}\n\n";
                     }
                 }

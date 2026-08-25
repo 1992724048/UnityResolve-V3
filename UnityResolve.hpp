@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <bitset>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -125,7 +126,6 @@ namespace unity {
 
     namespace process {
         auto fix_class_depend() -> void;
-        auto fix_type_depend() -> void;
     } // namespace process
 
     template<typename T> concept ClassMember = std::is_same_v<T, UnityField> || std::is_same_v<T, UnityMethod>;
@@ -141,12 +141,13 @@ namespace unity {
         std::string_view native_name;
         std::string_view native_namespace;
 
+        std::bitset<32> native_flags;
+
         mutable std::shared_mutex mutex;
         std::map<std::string_view, std::shared_ptr<UnityField>> unity_filed;
         std::map<std::string_view, std::shared_ptr<UnityMethod>> unity_method;
 
         friend auto process::fix_class_depend() -> void;
-        friend auto process::fix_type_depend() -> void;
     public:
         UnityClass(const std::uintptr_t native_ptr,
                    const std::weak_ptr<UnityAssembly>& native_assembly,
@@ -176,6 +177,10 @@ namespace unity {
 
         auto parent() const noexcept -> std::weak_ptr<UnityClass> {
             return native_parent;
+        }
+
+        auto flags() const noexcept -> std::bitset<32> {
+            return native_flags;
         }
 
         auto name_space() const noexcept -> std::string_view {
@@ -226,10 +231,10 @@ namespace unity {
         std::string_view native_name;
         std::size_t native_offset{};
 
+        std::bitset<32> native_flags;
         bool native_is_static{};
 
         friend auto process::fix_class_depend() -> void;
-        friend auto process::fix_type_depend() -> void;
     public:
         UnityField(const std::uintptr_t native_ptr,
                    const std::uintptr_t native_class_ptr,
@@ -266,6 +271,10 @@ namespace unity {
             return native_class;
         }
 
+        auto flags() const noexcept -> std::bitset<32> {
+            return native_flags;
+        }
+
         [[nodiscard]] auto is_static() const noexcept -> bool {
             return native_is_static;
         }
@@ -273,14 +282,29 @@ namespace unity {
 
     class UnityMethodArgs {
         mutable std::shared_mutex mutex;
-        std::map<std::string_view, std::shared_ptr<UnityType>> args;
+        std::map<std::string_view, std::weak_ptr<UnityType>> args;
     public:
+        UnityMethodArgs() = default;
+
+        explicit UnityMethodArgs(const std::map<std::string_view, std::shared_ptr<UnityType>>& types) :
+            args(types | std::views::transform([](const auto& pair) {
+                return std::pair{pair.first, std::weak_ptr<UnityType>(pair.second)};
+            }) | std::ranges::to<std::map>()) {}
+
+        UnityMethodArgs(UnityMethodArgs&& other) noexcept :
+            args(std::move(other.args)) {}
+
+        auto operator=(UnityMethodArgs&& other) noexcept -> UnityMethodArgs& {
+            args = std::move(other.args);
+            return *this;
+        }
+
         auto count() const noexcept -> std::size_t {
             return args.size();
         }
 
-        auto operator[](const std::string_view arg_name) const -> std::optional<std::weak_ptr<UnityType>> {
-            return util::try_find(mutex, arg_name, args);
+        auto map() const noexcept -> const std::map<std::string_view, std::weak_ptr<UnityType>>& {
+            return args;
         }
     };
 
@@ -288,19 +312,40 @@ namespace unity {
         std::uintptr_t native_ptr{};
         std::uintptr_t native_call_ptr{};
         std::uintptr_t native_type_ptr{};
+        std::uintptr_t native_class_ptr{};
 
         std::weak_ptr<UnityClass> native_class;
         std::weak_ptr<UnityType> native_type;
 
         std::string_view native_name;
-        std::size_t native_offset{};
-
         UnityMethodArgs native_args;
 
+        std::bitset<32> native_flags;
         bool native_is_static{};
 
-        friend auto process::fix_type_depend() -> void;
+        friend auto process::fix_class_depend() -> void;
     public:
+        UnityMethod(const std::uintptr_t native_ptr,
+                    const std::uintptr_t native_call_ptr,
+                    const std::uintptr_t native_type_ptr,
+                    const std::uintptr_t native_class_ptr,
+                    const std::weak_ptr<UnityType>& native_type,
+                    const std::string_view& native_name,
+                    const std::function<UnityMethodArgs()>& args_callback,
+                    const std::bitset<32>& native_flags) :
+            native_ptr{native_ptr},
+            native_call_ptr{native_call_ptr},
+            native_type_ptr{native_type_ptr},
+            native_class_ptr{native_class_ptr},
+            native_type{native_type},
+            native_name{native_name},
+            native_flags{native_flags} {
+            native_args = args_callback();
+            if (native_flags[1] && native_flags[3]) {
+                native_is_static = true;
+            }
+        }
+
         auto name() const noexcept -> std::string_view {
             return native_name;
         }
@@ -317,12 +362,12 @@ namespace unity {
             return native_args;
         }
 
-        auto offset() const noexcept -> std::size_t {
-            return native_offset;
-        }
-
         auto parent() const noexcept -> std::weak_ptr<UnityClass> {
             return native_class;
+        }
+
+        auto flags() const noexcept -> std::bitset<32> {
+            return native_flags;
         }
 
         auto is_static() const noexcept -> bool {
@@ -370,6 +415,7 @@ namespace unity {
                 iterator = func_address.emplace(func_name, address).first;
             }
 
+            // TODO: use 'std::start_lifetime_as' in c++23 if compiler support
             auto func = std::bit_cast<FuncPtr>(iterator->second);
             try {
                 if constexpr (std::is_void_v<Return>) {
@@ -437,10 +483,136 @@ namespace unity {
                 return details::unity_types[ptr] = type;
             }
 
-            inline auto try_load_method_il2cpp() -> void {}
-            inline auto try_load_method_mono() -> void {}
+            inline auto try_load_args_il2cpp(void* method_ptr) -> UnityMethodArgs {
+                const auto param_count_result = details::invoke_dyn_library<int>("il2cpp_method_get_param_count", method_ptr);
+                if (!param_count_result || *param_count_result == 0) {
+                    return {};
+                }
+                const int param_count = *param_count_result;
+                std::map<std::string_view, std::shared_ptr<UnityType>> args;
+                for (auto index = 0; index < param_count; index++) {
+                    const auto arg_type = details::invoke_dyn_library<void*>("il2cpp_method_get_param", method_ptr, index);
+                    const auto arg_name = details::invoke_dyn_library<const char*>("il2cpp_method_get_param_name", method_ptr, index);
+                    if (!arg_name || !arg_type) {
+                        continue;
+                    }
+                    args[*arg_name] = try_find_type(*arg_type);
+                }
+                return UnityMethodArgs(args);
+            }
 
-            inline auto try_load_method(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {}
+            inline auto try_load_args_mono(void* method_ptr) -> UnityMethodArgs {
+                const auto signature_ptr_result = details::invoke_dyn_library<void*>("mono_method_signature", method_ptr);
+                if (!signature_ptr_result || *signature_ptr_result == nullptr) {
+                    return {};
+                }
+                auto* signature = *signature_ptr_result;
+                const auto param_count_result = details::invoke_dyn_library<int>("mono_signature_get_param_count", signature);
+                if (!param_count_result || *param_count_result == 0) {
+                    return {};
+                }
+
+                const int param_count = *param_count_result;
+                std::map<std::string_view, std::shared_ptr<UnityType>> args;
+                std::vector<char*> names(param_count);
+                details::invoke_dyn_library<void>("mono_method_get_param_names", method_ptr, names.data());
+
+                void* iter{nullptr};
+                void* type_ptr{nullptr};
+                int name_index{0};
+
+                do {
+                    const auto type_ptr_result = details::invoke_dyn_library<void*>("mono_signature_get_params", signature, &iter);
+                    if (!type_ptr_result) {
+                        continue;
+                    }
+                    type_ptr = *type_ptr_result;
+                    args[names[name_index]] = try_find_type(type_ptr);
+                    name_index++;
+                } while (type_ptr != nullptr);
+                return UnityMethodArgs(args);
+            }
+
+            inline auto do_load_method(void* method_ptr,
+                                       void* method_address,
+                                       void* method_type_ptr,
+                                       void* class_ptr,
+                                       int flags,
+                                       const std::string_view name,
+                                       std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {
+                auto type = try_find_type(method_type_ptr);
+                auto callback = std::bind(details::mode == UnityMode::IL2CPP ? try_load_args_il2cpp : try_load_args_mono, method_ptr);
+                const auto method = std::make_shared<UnityMethod>(std::bit_cast<std::uintptr_t>(method_ptr),
+                                                                  std::bit_cast<std::uintptr_t>(method_address),
+                                                                  std::bit_cast<std::uintptr_t>(method_type_ptr),
+                                                                  std::bit_cast<std::uintptr_t>(class_ptr),
+                                                                  type,
+                                                                  name,
+                                                                  callback,
+                                                                  flags);
+                container[name] = method;
+            }
+
+            inline auto try_load_method_il2cpp(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {
+                void* iter{nullptr};
+                void* method_ptr{nullptr};
+                do {
+                    const auto method_ptr_result = details::invoke_dyn_library<void*>("il2cpp_class_get_methods", class_ptr, &iter);
+                    if (!method_ptr_result) {
+                        continue;
+                    }
+
+                    method_ptr = *method_ptr_result;
+
+                    int tmp;
+                    auto name = details::invoke_dyn_library<const char*>("il2cpp_method_get_name", method_ptr);
+                    auto type = details::invoke_dyn_library<void*>("il2cpp_method_get_return_type", method_ptr);
+                    auto flags = details::invoke_dyn_library<int>("il2cpp_method_get_flags", method_ptr, &tmp);
+
+                    if (!name || !type || !flags || *name == nullptr || *type == nullptr) {
+                        continue;
+                    }
+
+                    do_load_method(method_ptr, *static_cast<void**>(method_ptr), *type, class_ptr, *flags, *name, container);
+                } while (method_ptr != nullptr);
+            }
+
+            inline auto try_load_method_mono(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {
+                void* iter{nullptr};
+                void* method_ptr{nullptr};
+                do {
+                    const auto method_ptr_result = details::invoke_dyn_library<void*>("mono_class_get_methods", class_ptr, &iter);
+                    if (!method_ptr_result) {
+                        continue;
+                    }
+
+                    method_ptr = *method_ptr_result;
+                    const auto signature_ptr_result = details::invoke_dyn_library<void*>("mono_method_signature", method_ptr);
+                    if (!signature_ptr_result) {
+                        continue;
+                    }
+                    auto* signature = *signature_ptr_result;
+
+                    int tmp;
+                    auto name = details::invoke_dyn_library<const char*>("mono_method_get_name", method_ptr);
+                    auto type = details::invoke_dyn_library<void*>("mono_signature_get_return_type", signature);
+                    auto flags = details::invoke_dyn_library<int>("mono_method_get_flags", method_ptr, &tmp);
+
+                    if (!name || !type || !flags || *name == nullptr || *type == nullptr) {
+                        continue;
+                    }
+
+                    do_load_method(method_ptr, *static_cast<void**>(method_ptr), *type, class_ptr, *flags, *name, container);
+                } while (method_ptr != nullptr);
+            }
+
+            inline auto try_load_method(void* class_ptr, std::map<std::string_view, std::shared_ptr<UnityMethod>>& container) -> void {
+                if (details::mode == UnityMode::IL2CPP) {
+                    try_load_method_il2cpp(class_ptr, container);
+                } else {
+                    try_load_method_mono(class_ptr, container);
+                }
+            }
 
             inline auto foreach_load_field(const std::string_view class_get_fields,
                                            const std::string_view field_get_name,
@@ -462,6 +634,11 @@ namespace unity {
                     const auto field_name = details::invoke_dyn_library<const char*>(field_get_name, field_ptr);
                     const auto field_type = details::invoke_dyn_library<void*>(field_get_type, field_ptr);
                     const auto field_offset = details::invoke_dyn_library<int>(field_get_offset, field_ptr);
+
+                    if (!field_name || !field_type || !field_offset) {
+                        continue;
+                    }
+
                     auto type = try_find_type(*field_type);
                     const auto field = std::make_shared<UnityField>(std::bit_cast<std::uintptr_t>(field_ptr),
                                                                     std::bit_cast<std::uintptr_t>(class_ptr),
@@ -606,11 +783,12 @@ namespace unity {
                     for (const auto& unity_field : class_ptr->unity_filed | std::views::values) {
                         unity_field->native_class = details::unity_classes[unity_field->native_class_ptr];
                     }
+                    for (const auto& unity_method : class_ptr->unity_method | std::views::values) {
+                        unity_method->native_class = details::unity_classes[unity_method->native_class_ptr];
+                    }
                 }
             }
         }
-
-        inline auto fix_type_depend() -> void {}
     } // namespace process
 
     inline auto set_params(const UnityMode unity_mode, void* module_handle) -> void {
@@ -632,7 +810,6 @@ namespace unity {
 
         process::try_load_assembly();
         process::fix_class_depend();
-        process::fix_type_depend();
         return true;
     }
 
