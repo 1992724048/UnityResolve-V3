@@ -30,7 +30,7 @@ auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                         for (auto method : unity_class.lock()->content<unity::UnityMethod>()) {
                             const auto m = method.lock();
                             ss << "\t" << m->type().lock()->name() << ' ' << m->name() << "(";
-                            for (auto& [name, type] : m->args().map()) {
+                            for (auto& [type, name] : m->args().params()) {
                                 ss << type.lock()->name() << " " << name << ", ";
                             }
                             ss << ");\n";
