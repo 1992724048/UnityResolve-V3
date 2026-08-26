@@ -1,5 +1,5 @@
 ﻿# UnityResolve-V3
-## 状态: 半成品 (WIP)
+## 状态: 开发中 (WIP)
 
 ### [GLM Library](https://github.com/g-truc/glm)
 
