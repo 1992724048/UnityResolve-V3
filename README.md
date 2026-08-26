@@ -1,4 +1,7 @@
-﻿# UnityResolve-V3 (WIP)
+﻿# UnityResolve-V3
+## 状态: 半成品 (WIP)
+
+### [GLM Library](https://github.com/g-truc/glm)
 
 ``` c++
 UNITY_ACCESS;
