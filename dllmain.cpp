@@ -16,15 +16,15 @@ namespace {
     };
 
     auto use() -> void {
-        auto assembly_result = unity::find_assembly("Test.dll");
-        auto& assembly = *assembly_result->lock();
+        const auto assembly_result = unity::find_assembly("Test.dll");
+        const auto& assembly = *assembly_result->lock();
 
-        auto class_result = assembly["Player"];
-        auto& class_ = *class_result->lock();
+        const auto class_result = assembly["Player"];
+        const auto& class_ = *class_result->lock();
 
-        auto& hp_field = *class_[UTYPE(unity::UnityField), "hp"]->lock();
+        const auto& hp_field = *class_[UTYPE(unity::UnityField), "hp"]->lock();
 
-        auto method = UTYPE(unity::UnityMethod);
+        constexpr auto method = UTYPE(unity::UnityMethod);
 
         auto& hp_set_field = *class_[method, "set_hp"]->lock();
         auto& hp_static_field = *class_[method, "set_hp_static"]->lock();
@@ -37,10 +37,10 @@ namespace {
         Player::hp_access[hp_field_get.call(), hp_field_set.call()];
 
         Player player;
-        player[player.hp] = 114514;
-        player[player.set_hp](114514);
+        player[Player::hp] = 114514;
+        player[Player::set_hp](114514);
         Player::set_hp_static(114514);
-        player[player.hp_access].set(114514);
+        player[Player::hp_access].set(114514);
         player[Player::hp_access].get();
     }
 }
@@ -59,7 +59,7 @@ auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 unity::update();
 
                 std::stringstream ss;
-                for (const auto val : unity::details::unity_assembly | std::views::values) {
+                for (const auto& val : unity::details::unity_assembly | std::views::values) {
                     ss << "assembly: " << val->name() << '\n';
                     for (auto unity_class : val->content()) {
                         ss << "class " << unity_class.lock()->name() << " {\n";
@@ -71,7 +71,7 @@ auto APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                         for (auto method : unity_class.lock()->content<unity::UnityMethod>()) {
                             const auto m = method.lock();
                             ss << "\t" << m->type().lock()->name() << ' ' << m->name() << "(";
-                            for (auto& [type, name] : m->args().params()) {
+                            for (const auto& [type, name] : m->args().params()) {
                                 ss << type.lock()->name() << " " << name << ", ";
                             }
                             ss << ");\n";

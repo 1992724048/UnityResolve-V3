@@ -877,7 +877,7 @@ namespace unity {
                     }
                     auto& type = try_find_type(*arg_type);
                     args[*arg_name] = type;
-                    params.push_back({type, *arg_name});
+                    params.emplace_back(type, *arg_name);
                 }
                 return UnityMethodArgs(args, params);
             }
@@ -911,7 +911,7 @@ namespace unity {
                     type_ptr = *type_ptr_result;
                     auto& type = try_find_type(type_ptr);
                     args[names[name_index]] = type;
-                    params.push_back({type, names[name_index]});
+                    params.emplace_back(type, names[name_index]);
                     name_index++;
                 } while (type_ptr != nullptr);
                 return UnityMethodArgs(args, params);
