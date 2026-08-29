@@ -59,7 +59,7 @@ namespace unity {
                 return *ptr();
             }
 
-            auto get() -> T& {
+            auto value() -> T& {
                 return *ptr();
             }
 
@@ -106,7 +106,7 @@ namespace unity {
                 this->func = std::bit_cast<Ret(UNITY_CALLING_CONVENTION*)(Args...)>(address);
             }
 
-            auto operator()(Args&&... args) -> Ret {
+            auto operator()(const Args&... args) -> Ret {
                 return func(std::forward<Args>(args)...);
             }
 
@@ -159,15 +159,15 @@ namespace unity {
                 return {get_, set_};
             }
 
-            explicit(false) operator T&() {
+            explicit(false) operator T&() requires std::is_void_v<C> {
                 return get();
             }
 
-            explicit(false) operator const T&() {
+            explicit(false) operator const T&() requires std::is_void_v<C> {
                 return get();
             }
 
-            auto operator=(const T& value) -> Property& {
+            auto operator=(const T& value) -> Property& requires std::is_void_v<C> {
                 set(value);
                 return *this;
             }
@@ -418,6 +418,7 @@ namespace unity {
         auto name() const noexcept -> std::string_view;
         auto ptr() const noexcept -> std::uintptr_t;
         auto parent() const noexcept -> std::weak_ptr<UnityClass>;
+        auto type() const noexcept -> std::weak_ptr<UnityType>;
         auto flags(attributes::TypeAttributes attributes) const noexcept -> bool;
         auto name_space() const noexcept -> std::string_view;
         auto assembly() const noexcept -> std::weak_ptr<UnityAssembly>;
@@ -606,6 +607,10 @@ namespace unity {
         return native_parent;
     }
 
+    inline auto UnityClass::type() const noexcept -> std::weak_ptr<UnityType> {
+        return native_type;
+    }
+
     inline auto UnityClass::flags(attributes::TypeAttributes attributes) const noexcept -> bool {
         return native_flags.test(static_cast<uint32_t>(attributes));
     }
@@ -667,7 +672,7 @@ namespace unity {
             return std::ranges::all_of(std::views::iota(0U, params.size()),
                                        [&](std::size_t i) -> bool {
                                            auto type_ptr = params[i].first.lock();
-                                           return type_ptr && type_ptr->name() == args[i];
+                                           return type_ptr && (args[i] == "*" || type_ptr->name() == args[i]);
                                        });
         };
 
@@ -1595,24 +1600,282 @@ namespace unity {
         } // namespace csharp
 
         namespace engine {
+            class Transform;
+
             class Object : public csharp::Object {
                 std::uintptr_t cached_ptr{0};
+
+                auto set_name(csharp::String* value) -> void {
+                    static auto func = details::try_find_method<void, Object*, csharp::String*>("UnityEngine.CoreModule.dll", "Object", "set_name");
+                    return func(this, value);
+                }
+
+                auto get_name() -> csharp::String* {
+                    static auto func = details::try_find_method<csharp::String*, Object*>("UnityEngine.CoreModule.dll", "Object", "get_name");
+                    return func(this);
+                }
             public:
+                inline static Property<csharp::String*, Object> name{get_name, set_name};
+
                 template<typename T>
                 auto native() -> T* {
                     return std::bit_cast<T*>(cached_ptr);
                 }
+
+                auto destroy() -> void {
+                    static auto func = details::try_find_method<void, Object*>("UnityEngine.CoreModule.dll", "Object", "Destroy");
+                    return func(this);
+                }
+
+                auto instantiate() -> Object* {
+                    static auto func = details::try_find_method<Object*, Object*>("UnityEngine.CoreModule.dll", "Object", "Instantiate");
+                    return func(this);
+                }
+
+                auto dont_destroy_on_load() -> void {
+                    static auto func = details::try_find_method<void, Object*>("UnityEngine.CoreModule.dll", "Object", "DontDestroyOnLoad");
+                    return func(this);
+                }
+
+                template<std::derived_from<Object> T>
+                static auto find_objects_of_type(csharp::Type* type) -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<Object*>*, csharp::Type*>("UnityEngine.CoreModule.dll", "Object", "FindObjectsOfType", {"System.Type"});
+                    return func(type)->span();
+                }
             };
 
-            class GameObject : public Object {};
+            class GameObject : public Object {
+                auto set_active(const bool value) -> void {
+                    static auto func = details::try_find_method<void, GameObject*, bool>("UnityEngine.CoreModule.dll", "GameObject", "set_active");
+                    return func(this, value);
+                }
 
-            class Component : public Object {};
+                auto get_active() -> bool {
+                    static auto func = details::try_find_method<bool, GameObject*>("UnityEngine.CoreModule.dll", "GameObject", "get_active");
+                    return func(this);
+                }
+            public:
+                inline static Property<bool, GameObject> active{get_active, set_active};
 
-            class Behaviour : public Component {};
+                auto transform() -> Transform* {
+                    static auto func = details::try_find_method<Transform*, GameObject*>("UnityEngine.CoreModule.dll", "GameObject", "get_transform");
+                    return func(this);
+                }
 
-            class Transform : public Component {};
+                auto game_object() -> GameObject* {
+                    return this;
+                }
+            };
 
-            class Camera : public Behaviour {};
+            class Component : public Object {
+                auto get_tag() -> csharp::String* {
+                    static auto func = details::try_find_method<csharp::String*, Component*>("UnityEngine.CoreModule.dll", "Component", "get_tag");
+                    return func(this);
+                }
+
+                auto set_tag(csharp::String* tag) -> void {
+                    static auto func = details::try_find_method<void, Component*, csharp::String*>("UnityEngine.CoreModule.dll", "Component", "set_tag");
+                    return func(this, tag);
+                }
+            public:
+                inline static Property<csharp::String*, Component> tag{get_tag, set_tag};
+
+                auto transform() -> Transform* {
+                    static auto func = details::try_find_method<Transform*, Component*>("UnityEngine.CoreModule.dll", "Component", "get_transform");
+                    return func(this);
+                }
+
+                auto game_object() -> GameObject* {
+                    static auto func = details::try_find_method<GameObject*, Component*>("UnityEngine.CoreModule.dll", "Component", "get_gameObject");
+                    return func(this);
+                }
+
+                template<typename T>
+                auto get_component_in_children(csharp::Type* type) -> T* {
+                    static auto func = details::try_find_method<T*, Component*, csharp::Type*>("UnityEngine.CoreModule.dll", "Component", "GetComponentInChildren", {"System.Type"});
+                    return func(this, type)->span();
+                }
+
+                template<typename T>
+                auto get_component_in_parent(csharp::Type* type) -> T* {
+                    static auto func = details::try_find_method<T*, Component*, csharp::Type*>("UnityEngine.CoreModule.dll", "Component", "GetComponentInParent", {"System.Type"});
+                    return func(this, type)->span();
+                }
+
+                template<typename T>
+                auto get_components() -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<T*>*, Component*>("UnityEngine.CoreModule.dll", "Component", "GetComponents");
+                    return func(this)->span();
+                }
+
+                template<typename T>
+                auto get_components(csharp::Type* type) -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<T*>*, Component*, csharp::Type*>("UnityEngine.CoreModule.dll", "Component", "GetComponents", {"System.Type"});
+                    return func(this, type)->span();
+                }
+
+                template<typename T>
+                auto get_components_in_children() -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<T*>*, Component*>("UnityEngine.CoreModule.dll", "Component", "GetComponentsInChildren");
+                    return func(this)->span();
+                }
+
+                template<typename T>
+                auto get_components_in_children(csharp::Type* type) -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<T*>*, Component*, csharp::Type*>("UnityEngine.CoreModule.dll", "Component", "GetComponentsInChildren", {"System.Type"});
+                    return func(this, type)->span();
+                }
+
+                template<typename T>
+                auto get_components_in_parent() -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<T*>*, Component*>("UnityEngine.CoreModule.dll", "Component", "GetComponentsInParent");
+                    return func(this)->span();
+                }
+
+                template<typename T>
+                auto get_components_in_parent(csharp::Type* type) -> std::span<T*> {
+                    static auto func = details::try_find_method<csharp::Array<T*>*, Component*, csharp::Type*>("UnityEngine.CoreModule.dll", "Component", "GetComponentsInParent", {"System.Type"});
+                    return func(this, type)->span();
+                }
+            };
+
+            class Behaviour : public Component {
+                auto set_enabled(const bool value) -> void {
+                    static auto func = details::try_find_method<void, Behaviour*, bool>("UnityEngine.CoreModule.dll", "Behaviour", "set_enabled");
+                    return func(this, value);
+                }
+
+                auto get_enabled() -> bool {
+                    static auto func = details::try_find_method<bool, Behaviour*>("UnityEngine.CoreModule.dll", "Behaviour", "get_enabled");
+                    return func(this);
+                }
+            public:
+                inline static Property<bool, Behaviour> enabled{get_enabled, set_enabled};
+
+                auto is_active_and_enabled() -> bool {
+                    static auto func = details::try_find_method<bool, Behaviour*>("UnityEngine.CoreModule.dll", "Behaviour", "get_isActiveAndEnabled");
+                    return func(this);
+                }
+            };
+
+            class Transform : public Component {
+                auto set_position(const glm::vec3 value) -> void {
+                    static auto func = details::try_find_method<void, Transform*, glm::vec3>("UnityEngine.CoreModule.dll", "Transform", "set_position");
+                    return func(this, value);
+                }
+
+                auto get_position() -> glm::vec3 {
+                    static auto func = details::try_find_method<glm::vec3, Transform*>("UnityEngine.CoreModule.dll", "Transform", "get_position");
+                    return func(this);
+                }
+
+                auto set_local_position(const glm::vec3 value) -> void {
+                    static auto func = details::try_find_method<void, Transform*, glm::vec3>("UnityEngine.CoreModule.dll", "Transform", "set_localPosition");
+                    return func(this, value);
+                }
+
+                auto get_local_position() -> glm::vec3 {
+                    static auto func = details::try_find_method<glm::vec3, Transform*>("UnityEngine.CoreModule.dll", "Transform", "get_localPosition");
+                    return func(this);
+                }
+            public:
+                inline static Property<glm::vec3, Transform> position{get_position, set_position};
+                inline static Property<glm::vec3, Transform> local_position{get_local_position, set_local_position};
+            };
+
+            enum class Eye : int { Left, Right, Mono };
+
+            class Camera : public Behaviour {
+                auto set_fov(const float fov) -> void {
+                    static auto func = details::try_find_method<void, Camera*, float>("UnityEngine.CoreModule.dll", "Camera", "set_fieldOfView");
+                    return func(this, fov);
+                }
+
+                auto get_fov() -> float {
+                    static auto func = details::try_find_method<float, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_fieldOfView");
+                    return func(this);
+                }
+
+                auto set_iso(const int iso) -> void {
+                    static auto func = details::try_find_method<void, Camera*, int>("UnityEngine.CoreModule.dll", "Camera", "set_iso");
+                    return func(this, iso);
+                }
+
+                auto get_iso() -> int {
+                    static auto func = details::try_find_method<int, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_iso");
+                    return func(this);
+                }
+
+                auto set_depth(const float depth) -> void {
+                    static auto func = details::try_find_method<void, Camera*, float>("UnityEngine.CoreModule.dll", "Camera", "set_depth");
+                    return func(this, depth);
+                }
+
+                auto get_depth() -> float {
+                    static auto func = details::try_find_method<float, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_depth");
+                    return func(this);
+                }
+
+                auto set_hdr(const bool hdr) -> void {
+                    static auto func = details::try_find_method<void, Camera*, bool>("UnityEngine.CoreModule.dll", "Camera", "set_allowHDR");
+                    return func(this, hdr);
+                }
+
+                auto get_hdr() -> bool {
+                    static auto func = details::try_find_method<bool, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_allowHDR");
+                    return func(this);
+                }
+            public:
+                inline static Property<float, Camera> fov{get_fov, set_fov};
+                inline static Property<int, Camera> iso{get_iso, set_iso};
+                inline static Property<float, Camera> depth{get_depth, set_depth};
+                inline static Property<bool, Camera> hdr{get_hdr, set_hdr};
+
+                static auto main() -> Camera* {
+                    static auto func = details::try_find_method<Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_main");
+                    return func();
+                }
+
+                static auto current() -> Camera* {
+                    static auto func = details::try_find_method<Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_current");
+                    return func();
+                }
+
+                static auto count() -> int {
+                    static auto func = details::try_find_method<int>("UnityEngine.CoreModule.dll", "Camera", "get_allCamerasCount");
+                    return func();
+                }
+
+                static auto all() -> std::span<Camera*> {
+                    static auto func = details::try_find_method<csharp::Array<Camera*>*>("UnityEngine.CoreModule.dll", "Camera", "get_allCameras");
+                    return func()->span();
+                }
+
+                auto pixel_width() -> int {
+                    static auto func = details::try_find_method<int, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_pixelWidth");
+                    return func(this);
+                }
+
+                auto pixel_height() -> int {
+                    static auto func = details::try_find_method<int, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_pixelHeight");
+                    return func(this);
+                }
+
+                auto camera_to_world_matrix() -> glm::mat4x4 {
+                    static auto func = details::try_find_method<glm::mat4x4, Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_cameraToWorldMatrix");
+                    return func(this);
+                }
+
+                auto world_to_screen_point(const glm::vec3& position, const Eye eye = Eye::Mono) -> glm::vec3 {
+                    static auto func = details::try_find_method<glm::vec3, Camera*, const glm::vec3, Eye>("UnityEngine.CoreModule.dll", "Camera", "WorldToScreenPoint", {"*", "*"});
+                    return func(this, position, eye);
+                }
+
+                auto screen_to_world_point(const glm::vec3& position, const Eye eye = Eye::Mono) -> glm::vec3 {
+                    static auto func = details::try_find_method<glm::vec3, Camera*, const glm::vec3, Eye>("UnityEngine.CoreModule.dll", "Camera", "ScreenToWorldPoint", {"*", "*"});
+                    return func(this, position, eye);
+                }
+            };
         } // namespace engine
     } // namespace api
 } // namespace unity
