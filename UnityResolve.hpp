@@ -1421,6 +1421,14 @@ namespace unity {
                     return converter.to_bytes(wchar_array.data());
                 }
 
+                auto data() -> wchar_t* {
+                    return wchar_array.data();
+                }
+
+                auto data() const -> const wchar_t* {
+                    return wchar_array.data();
+                }
+
                 explicit(false) operator std::string() const {
                     return local();
                 }
@@ -1471,6 +1479,14 @@ namespace unity {
                     return extents;
                 }
 
+                auto data() -> T* {
+                    return content.data();
+                }
+
+                auto data() const -> const T* {
+                    return content.data();
+                }
+
                 [[nodiscard]] auto size() const -> std::size_t {
                     return max_length;
                 }
@@ -1517,6 +1533,14 @@ namespace unity {
 
                 auto span() -> std::span<T> {
                     return list->span();
+                }
+
+                auto data() -> T* {
+                    return list.data();
+                }
+
+                auto data() const -> const T* {
+                    return list.data();
                 }
 
                 [[nodiscard]] auto size() const -> std::size_t {
