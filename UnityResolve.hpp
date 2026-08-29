@@ -36,6 +36,7 @@
 
 #define UTYPE(type) unity::util::TypeIdentity<type>{}
 #define UNITY_ACCESS using namespace unity::access;
+#define UNITY_UDL using namespace unity::udl;
 
 namespace unity {
     enum class UnityMode : std::uint8_t { IL2CPP, MONO };
@@ -142,7 +143,7 @@ namespace unity {
                 return get_();
             }
 
-            auto set(T value) -> void requires std::is_void_v<C> {
+            auto set(const T& value) -> void requires std::is_void_v<C> {
                 set_(std::move(value));
             }
 
@@ -150,12 +151,25 @@ namespace unity {
                 return get_(instance);
             }
 
-            auto set(C* instance, T value) -> void requires (!std::is_void_v<C>) {
+            auto set(C* instance, const T& value) -> void requires (!std::is_void_v<C>) {
                 set_(instance, std::move(value));
             }
 
             [[nodiscard]] auto function() const -> std::pair<const GetterFunc&, const SetterFunc&> {
                 return {get_, set_};
+            }
+
+            explicit(false) operator T&() {
+                return get();
+            }
+
+            explicit(false) operator const T&() {
+                return get();
+            }
+
+            auto operator=(const T& value) -> Property& {
+                set(value);
+                return *this;
             }
         };
 
@@ -174,8 +188,17 @@ namespace unity {
                     return get_();
                 }
 
-                auto set(T value) -> void {
+                auto set(const T& value) -> void {
                     set_(value);
+                }
+
+                explicit(false) operator T&() {
+                    return get();
+                }
+
+                auto operator=(const T& value) -> PropertyHelper& {
+                    set(value);
+                    return *this;
                 }
             };
         } // namespace helper
@@ -226,6 +249,12 @@ namespace unity {
                 return std::nullopt;
             }
             return it->second;
+        }
+
+        inline auto split_str(const std::string_view str, const std::string_view delim) -> std::vector<std::string_view> {
+            return str | std::views::split(delim) | std::views::transform([](auto r) -> auto {
+                return std::string_view(r.begin(), r.end());
+            }) | std::ranges::to<std::vector>();
         }
     } // namespace util
 
@@ -326,34 +355,17 @@ namespace unity {
         mutable std::shared_mutex mutex;
         std::map<std::string_view, std::shared_ptr<UnityClass>> unity_class;
     public:
-        UnityAssembly(const std::string_view name, const std::uintptr_t ptr, const std::function<void(std::map<std::string_view, std::shared_ptr<UnityClass>>&)>& callback) :
-            native_ptr{ptr},
-            native_name{name} {
-            callback(unity_class);
-        }
+        UnityAssembly(std::string_view name, std::uintptr_t ptr, const std::function<void(std::map<std::string_view, std::shared_ptr<UnityClass>>&)>& callback);
 
-        auto name() const noexcept -> std::string_view {
-            return native_name;
-        }
-
-        auto ptr() const noexcept -> std::uintptr_t {
-            return native_ptr;
-        }
-
-        auto content() const noexcept -> auto {
-            return unity_class | std::views::values | std::views::transform([](const std::shared_ptr<UnityClass>& ptr)-> std::weak_ptr<UnityClass> {
-                return ptr;
-            });
-        }
-
-        auto operator[](const std::string_view& class_name) const -> std::optional<std::weak_ptr<UnityClass>> {
-            return util::try_find(mutex, class_name, unity_class);
-        }
+        auto name() const noexcept -> std::string_view;
+        auto ptr() const noexcept -> std::uintptr_t;
+        auto content() const noexcept -> auto;
+        auto operator[](const std::string_view& class_name) const -> std::optional<std::weak_ptr<UnityClass>>;
     };
 
     namespace api::csharp {
         class Type;
-    }
+    } // namespace api::csharp
 
     class UnityType final {
         std::uintptr_t native_ptr{};
@@ -361,27 +373,12 @@ namespace unity {
         std::string native_name;
         std::size_t native_size{};
     public:
-        UnityType(const std::uintptr_t native_ptr, const std::uintptr_t native_object, std::string native_name, const std::size_t native_size) :
-            native_ptr{native_ptr},
-            native_object{native_object},
-            native_name{std::move(native_name)},
-            native_size{native_size} {}
+        UnityType(std::uintptr_t native_ptr, std::uintptr_t native_object, std::string native_name, std::size_t native_size);
 
-        [[nodiscard]] auto name() const noexcept -> const std::string& {
-            return native_name;
-        }
-
-        [[nodiscard]] auto ptr() const noexcept -> std::uintptr_t {
-            return native_ptr;
-        }
-
-        [[nodiscard]] auto size() const noexcept -> std::size_t {
-            return native_size;
-        }
-
-        [[nodiscard]] auto type() const noexcept -> api::csharp::Type* {
-            return std::bit_cast<api::csharp::Type*>(native_object);
-        }
+        [[nodiscard]] auto name() const noexcept -> const std::string&;
+        [[nodiscard]] auto ptr() const noexcept -> std::uintptr_t;
+        [[nodiscard]] auto size() const noexcept -> std::size_t;
+        [[nodiscard]] auto type() const noexcept -> api::csharp::Type*;
     };
 
     namespace process {
@@ -389,6 +386,58 @@ namespace unity {
     } // namespace process
 
     template<typename T> concept ClassMember = std::is_same_v<T, UnityField> || std::is_same_v<T, UnityMethod>;
+
+    class UnityClass final {
+        std::uintptr_t native_ptr{};
+        std::uintptr_t native_parent_ptr{};
+        std::weak_ptr<UnityAssembly> native_assembly;
+        std::weak_ptr<UnityType> native_type;
+        std::weak_ptr<UnityClass> native_parent;
+
+        std::string_view native_name;
+        std::string_view native_namespace;
+
+        std::bitset<32> native_flags;
+
+        mutable std::shared_mutex mutex;
+        std::map<std::string_view, std::shared_ptr<UnityField>> unity_filed;
+        std::multimap<std::string_view, std::shared_ptr<UnityMethod>> unity_method;
+
+        friend auto process::fix_class_depend() -> void;
+    public:
+        UnityClass(std::uintptr_t native_ptr,
+                   const std::weak_ptr<UnityAssembly>& native_assembly,
+                   const std::weak_ptr<UnityType>& native_type,
+                   std::string_view native_name,
+                   std::uintptr_t native_parent_ptr,
+                   std::string_view native_namespace,
+                   std::bitset<32> native_flags,
+                   const std::function<void(std::map<std::string_view, std::shared_ptr<UnityField>>&)>& field_callback,
+                   const std::function<void(std::multimap<std::string_view, std::shared_ptr<UnityMethod>>&)>& method_callback);
+
+        auto name() const noexcept -> std::string_view;
+        auto ptr() const noexcept -> std::uintptr_t;
+        auto parent() const noexcept -> std::weak_ptr<UnityClass>;
+        auto flags(attributes::TypeAttributes attributes) const noexcept -> bool;
+        auto name_space() const noexcept -> std::string_view;
+        auto assembly() const noexcept -> std::weak_ptr<UnityAssembly>;
+
+        template<ClassMember T>
+        auto count() const -> std::size_t;
+
+        template<ClassMember T>
+        auto content() const -> auto;
+
+        template<ClassMember T>
+        auto operator[](util::TypeIdentity<T> /* unused */, std::string_view name, const std::vector<std::string_view>& args_type = {}) const -> std::optional<std::weak_ptr<T>>;
+    private:
+        template<ClassMember U>
+        auto get_container() const -> const auto&;
+
+        using MethodIt = decltype(unity_method)::const_iterator;
+
+        static auto find_with_args(const std::vector<std::string_view>& args, const std::ranges::subrange<MethodIt>& range) -> std::optional<std::weak_ptr<UnityMethod>>;
+    };
 
     class UnityField final {
         std::uintptr_t native_ptr{};
@@ -405,48 +454,15 @@ namespace unity {
 
         friend auto process::fix_class_depend() -> void;
     public:
-        UnityField(const std::uintptr_t native_ptr,
-                   const std::uintptr_t native_class_ptr,
-                   const std::weak_ptr<UnityType>& native_type,
-                   const std::string_view& native_name,
-                   const std::size_t native_offset,
-                   const std::bitset<32> native_flags) :
-            native_ptr{native_ptr},
-            native_class_ptr{native_class_ptr},
-            native_type{native_type},
-            native_name{native_name},
-            native_offset{native_offset},
-            native_flags{native_flags} {
-            native_is_static = flags(attributes::FieldAttributes::Static);
-        }
+        UnityField(std::uintptr_t native_ptr, std::uintptr_t native_class_ptr, const std::weak_ptr<UnityType>& native_type, const std::string_view& native_name, std::size_t native_offset, std::bitset<32> native_flags);
 
-        [[nodiscard]] auto name() const noexcept -> std::string_view {
-            return native_name;
-        }
-
-        [[nodiscard]] auto ptr() const noexcept -> std::uintptr_t {
-            return native_ptr;
-        }
-
-        [[nodiscard]] auto type() const noexcept -> std::weak_ptr<UnityType> {
-            return native_type;
-        }
-
-        [[nodiscard]] auto offset() const noexcept -> std::size_t {
-            return native_offset;
-        }
-
-        [[nodiscard]] auto parent() const noexcept -> std::weak_ptr<UnityClass> {
-            return native_class;
-        }
-
-        [[nodiscard]] auto flags(attributes::FieldAttributes attributes) const noexcept -> bool {
-            return native_flags.test(static_cast<uint32_t>(attributes));
-        }
-
-        [[nodiscard]] auto is_static() const noexcept -> bool {
-            return native_is_static;
-        }
+        [[nodiscard]] auto name() const noexcept -> std::string_view;
+        [[nodiscard]] auto ptr() const noexcept -> std::uintptr_t;
+        [[nodiscard]] auto type() const noexcept -> std::weak_ptr<UnityType>;
+        [[nodiscard]] auto offset() const noexcept -> std::size_t;
+        [[nodiscard]] auto parent() const noexcept -> std::weak_ptr<UnityClass>;
+        [[nodiscard]] auto flags(attributes::FieldAttributes attributes) const noexcept -> bool;
+        [[nodiscard]] auto is_static() const noexcept -> bool;
     };
 
     class UnityMethodArgs {
@@ -454,39 +470,19 @@ namespace unity {
         std::map<std::string_view, std::weak_ptr<UnityType>> args;
         std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>> param_vec;
     public:
-        UnityMethodArgs() = default;
-        ~UnityMethodArgs() = default;
+        UnityMethodArgs();
+        ~UnityMethodArgs();
 
-        explicit UnityMethodArgs(const std::map<std::string_view, std::shared_ptr<UnityType>>& types, std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>>& params) :
-            args(types | std::views::transform([](const auto& pair) -> auto {
-                return std::pair{pair.first, std::weak_ptr<UnityType>(pair.second)};
-            }) | std::ranges::to<std::map>()),
-            param_vec{std::move(params)} {}
+        explicit UnityMethodArgs(const std::map<std::string_view, std::shared_ptr<UnityType>>& types, std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>>& params);
 
-        UnityMethodArgs(UnityMethodArgs&& other) noexcept :
-            args(std::move(other.args)),
-            param_vec(std::move(other.param_vec)) {}
+        UnityMethodArgs(UnityMethodArgs&& other) noexcept;
 
         UnityMethodArgs(const UnityMethodArgs& other) = delete;
         auto operator=(const UnityMethodArgs& other) -> UnityMethodArgs& = delete;
-
-        auto operator=(UnityMethodArgs&& other) noexcept -> UnityMethodArgs& {
-            args = std::move(other.args);
-            param_vec = std::move(other.param_vec);
-            return *this;
-        }
-
-        auto count() const noexcept -> std::size_t {
-            return args.size();
-        }
-
-        auto map() const noexcept -> const std::map<std::string_view, std::weak_ptr<UnityType>>& {
-            return args;
-        }
-
-        auto params() const noexcept -> const std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>>& {
-            return param_vec;
-        }
+        auto operator=(UnityMethodArgs&& other) noexcept -> UnityMethodArgs&;
+        auto count() const noexcept -> std::size_t;
+        auto map() const noexcept -> const std::map<std::string_view, std::weak_ptr<UnityType>>&;
+        auto params() const noexcept -> const std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>>&;
     };
 
     class UnityMethod final {
@@ -508,202 +504,324 @@ namespace unity {
 
         friend auto process::fix_class_depend() -> void;
     public:
-        UnityMethod(const std::uintptr_t native_ptr,
-                    const std::uintptr_t native_call_ptr,
-                    const std::uintptr_t native_class_ptr,
+        UnityMethod(std::uintptr_t native_ptr,
+                    std::uintptr_t native_call_ptr,
+                    std::uintptr_t native_class_ptr,
                     const std::weak_ptr<UnityType>& native_type,
                     const std::string_view& native_name,
                     const std::function<UnityMethodArgs()>& args_callback,
                     const std::function<std::optional<void*>()>& compile,
-                    const std::bitset<32>& native_flags) :
-            native_ptr{native_ptr},
-            native_call_ptr{native_call_ptr},
-            native_class_ptr{native_class_ptr},
-            native_type{native_type},
-            native_name{native_name},
-            native_flags{native_flags},
-            compile_call{compile} {
-            native_args = args_callback();
-            native_is_static = flags(attributes::MethodAttributes::Static);
-            native_is_compile = !compile;
-        }
+                    const std::bitset<32>& native_flags);
 
-        auto name() const noexcept -> std::string_view {
-            return native_name;
-        }
-
-        auto ptr() const noexcept -> std::uintptr_t {
-            return native_ptr;
-        }
-
-        auto call() -> std::uintptr_t {
-            if (native_is_compile) {
-                return native_call_ptr;
-            }
-            compile();
-            return native_call_ptr;
-        }
-
-        auto type() const noexcept -> std::weak_ptr<UnityType> {
-            return native_type;
-        }
-
-        auto args() const noexcept -> const UnityMethodArgs& {
-            return native_args;
-        }
-
-        auto parent() const noexcept -> std::weak_ptr<UnityClass> {
-            return native_class;
-        }
-
-        auto flags(attributes::MethodAttributes attributes) const noexcept -> bool {
-            return native_flags.test(static_cast<uint32_t>(attributes));
-        }
-
-        auto is_static() const noexcept -> bool {
-            return native_is_static;
-        }
+        auto name() const noexcept -> std::string_view;
+        auto ptr() const noexcept -> std::uintptr_t;
+        auto call() -> std::uintptr_t;
+        auto type() const noexcept -> std::weak_ptr<UnityType>;
+        auto args() const noexcept -> const UnityMethodArgs&;
+        auto parent() const noexcept -> std::weak_ptr<UnityClass>;
+        auto flags(attributes::MethodAttributes attributes) const noexcept -> bool;
+        auto is_static() const noexcept -> bool;
 
         template<typename Return, typename... Args>
-        auto invoke(Args&&... args) -> Return {
-            // TODO: use 'std::start_lifetime_as' in c++23 if compiler support
-            return std::bit_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(call())(std::forward<Args>(args)...);
-        }
+        auto invoke(Args&&... args) -> Return;
     private:
-        auto compile() -> void {
-            const auto result = compile_call();
-            if (!result) {
-                throw std::runtime_error("nullptr");
-            }
-            native_call_ptr = std::bit_cast<std::uintptr_t>(*result);
-            native_is_compile = result.has_value();
-        }
+        auto compile() -> void;
     };
 
-    class UnityClass final {
-        std::uintptr_t native_ptr{};
-        std::uintptr_t native_parent_ptr{};
-        std::weak_ptr<UnityAssembly> native_assembly;
-        std::weak_ptr<UnityType> native_type;
-        std::weak_ptr<UnityClass> native_parent;
+    inline UnityAssembly::UnityAssembly(const std::string_view name, const std::uintptr_t ptr, const std::function<void(std::map<std::string_view, std::shared_ptr<UnityClass>>&)>& callback) :
+        native_ptr{ptr},
+        native_name{name} {
+        callback(unity_class);
+    }
 
-        std::string_view native_name;
-        std::string_view native_namespace;
+    inline auto UnityAssembly::name() const noexcept -> std::string_view {
+        return native_name;
+    }
 
-        std::bitset<32> native_flags;
+    inline auto UnityAssembly::ptr() const noexcept -> std::uintptr_t {
+        return native_ptr;
+    }
 
-        mutable std::shared_mutex mutex;
-        std::map<std::string_view, std::shared_ptr<UnityField>> unity_filed;
-        std::multimap<std::string_view, std::shared_ptr<UnityMethod>> unity_method;
+    inline auto UnityAssembly::content() const noexcept -> auto {
+        return unity_class | std::views::values | std::views::transform([](const std::shared_ptr<UnityClass>& ptr)-> std::weak_ptr<UnityClass> {
+            return ptr;
+        });
+    }
 
-        friend auto process::fix_class_depend() -> void;
-    public:
-        UnityClass(const std::uintptr_t native_ptr,
-                   const std::weak_ptr<UnityAssembly>& native_assembly,
-                   const std::weak_ptr<UnityType>& native_type,
-                   const std::string_view native_name,
-                   const std::uintptr_t native_parent_ptr,
-                   const std::string_view native_namespace,
-                   const std::bitset<32> native_flags,
-                   const std::function<void(std::map<std::string_view, std::shared_ptr<UnityField>>&)>& field_callback,
-                   const std::function<void(std::multimap<std::string_view, std::shared_ptr<UnityMethod>>&)>& method_callback) :
-            native_ptr{native_ptr},
-            native_parent_ptr{native_parent_ptr},
-            native_assembly{native_assembly},
-            native_type{native_type},
-            native_name{native_name},
-            native_namespace{native_namespace},
-            native_flags{native_flags} {
-            field_callback(unity_filed);
-            method_callback(unity_method);
-        }
+    inline auto UnityAssembly::operator[](const std::string_view& class_name) const -> std::optional<std::weak_ptr<UnityClass>> {
+        return util::try_find(mutex, class_name, unity_class);
+    }
 
-        auto name() const noexcept -> std::string_view {
-            return native_name;
-        }
+    inline UnityType::UnityType(const std::uintptr_t native_ptr, const std::uintptr_t native_object, std::string native_name, const std::size_t native_size) :
+        native_ptr{native_ptr},
+        native_object{native_object},
+        native_name{std::move(native_name)},
+        native_size{native_size} {}
 
-        auto ptr() const noexcept -> std::uintptr_t {
-            return native_ptr;
-        }
+    inline auto UnityType::name() const noexcept -> const std::string& {
+        return native_name;
+    }
 
-        auto parent() const noexcept -> std::weak_ptr<UnityClass> {
-            return native_parent;
-        }
+    inline auto UnityType::ptr() const noexcept -> std::uintptr_t {
+        return native_ptr;
+    }
 
-        auto flags(attributes::TypeAttributes attributes) const noexcept -> bool {
-            return native_flags.test(static_cast<uint32_t>(attributes));
-        }
+    inline auto UnityType::size() const noexcept -> std::size_t {
+        return native_size;
+    }
 
-        auto name_space() const noexcept -> std::string_view {
-            return native_namespace;
-        }
+    inline auto UnityType::type() const noexcept -> api::csharp::Type* {
+        return std::bit_cast<api::csharp::Type*>(native_object);
+    }
 
-        auto assembly() const noexcept -> std::weak_ptr<UnityAssembly> {
-            return native_assembly;
-        }
+    inline UnityClass::UnityClass(const std::uintptr_t native_ptr,
+                                  const std::weak_ptr<UnityAssembly>& native_assembly,
+                                  const std::weak_ptr<UnityType>& native_type,
+                                  const std::string_view native_name,
+                                  const std::uintptr_t native_parent_ptr,
+                                  const std::string_view native_namespace,
+                                  const std::bitset<32> native_flags,
+                                  const std::function<void(std::map<std::string_view, std::shared_ptr<UnityField>>&)>& field_callback,
+                                  const std::function<void(std::multimap<std::string_view, std::shared_ptr<UnityMethod>>&)>& method_callback) :
+        native_ptr{native_ptr},
+        native_parent_ptr{native_parent_ptr},
+        native_assembly{native_assembly},
+        native_type{native_type},
+        native_name{native_name},
+        native_namespace{native_namespace},
+        native_flags{native_flags} {
+        field_callback(unity_filed);
+        method_callback(unity_method);
+    }
 
-        template<ClassMember T>
-        auto count() const -> std::size_t {
-            const auto& container = get_container<T>();
-            return container.size();
-        }
+    inline auto UnityClass::name() const noexcept -> std::string_view {
+        return native_name;
+    }
 
-        template<ClassMember T>
-        auto content() const -> auto {
-            return get_container<T>() | std::views::values | std::views::transform([](const std::shared_ptr<T>& ptr)-> std::weak_ptr<T> {
-                return ptr;
-            });
-        }
+    inline auto UnityClass::ptr() const noexcept -> std::uintptr_t {
+        return native_ptr;
+    }
 
-        template<ClassMember T>
-        auto operator[](util::TypeIdentity<T> /* unused */, const std::string_view name, const std::vector<std::string_view> args_type = {}) const -> std::optional<std::weak_ptr<T>> {
-            if constexpr (std::is_same_v<T, UnityField>) {
-                return util::try_find(mutex, name, unity_filed);
-            } else {
-                std::shared_lock _(mutex);
-                const auto [fst, snd] = unity_method.equal_range(name);
-                if (fst == snd) {
-                    return std::nullopt;
-                }
-                if (args_type.empty()) {
-                    return fst->second;
-                }
-                return find_with_args(args_type, std::ranges::subrange(fst, snd));
+    inline auto UnityClass::parent() const noexcept -> std::weak_ptr<UnityClass> {
+        return native_parent;
+    }
+
+    inline auto UnityClass::flags(attributes::TypeAttributes attributes) const noexcept -> bool {
+        return native_flags.test(static_cast<uint32_t>(attributes));
+    }
+
+    inline auto UnityClass::name_space() const noexcept -> std::string_view {
+        return native_namespace;
+    }
+
+    inline auto UnityClass::assembly() const noexcept -> std::weak_ptr<UnityAssembly> {
+        return native_assembly;
+    }
+
+    template<ClassMember T>
+    auto UnityClass::count() const -> std::size_t {
+        const auto& container = get_container<T>();
+        return container.size();
+    }
+
+    template<ClassMember T>
+    auto UnityClass::content() const -> auto {
+        return get_container<T>() | std::views::values | std::views::transform([](const std::shared_ptr<T>& ptr)-> std::weak_ptr<T> {
+            return ptr;
+        });
+    }
+
+    template<ClassMember T>
+    auto UnityClass::operator[](util::TypeIdentity<T> /* unused */, const std::string_view name, const std::vector<std::string_view>& args_type) const -> std::optional<std::weak_ptr<T>> {
+        if constexpr (std::is_same_v<T, UnityField>) {
+            return util::try_find(mutex, name, unity_filed);
+        } else {
+            std::shared_lock _(mutex);
+            const auto [fst, snd] = unity_method.equal_range(name);
+            if (fst == snd) {
+                return std::nullopt;
             }
-        }
-    private:
-        template<ClassMember U>
-        auto get_container() const -> const auto& {
-            if constexpr (std::is_same_v<U, UnityField>) {
-                return unity_filed;
-            } else {
-                return unity_method;
+            if (args_type.empty()) {
+                return fst->second;
             }
+            return find_with_args(args_type, std::ranges::subrange(fst, snd));
         }
+    }
 
-        using MethodIt = decltype(unity_method)::const_iterator;
+    template<ClassMember U>
+    auto UnityClass::get_container() const -> const auto& {
+        if constexpr (std::is_same_v<U, UnityField>) {
+            return unity_filed;
+        } else {
+            return unity_method;
+        }
+    }
 
-        static auto find_with_args(const std::vector<std::string_view>& args, const std::ranges::subrange<MethodIt>& range) -> std::optional<std::weak_ptr<UnityMethod>> {
-            auto matches = [&](const auto& entry) {
-                const auto& params = entry.second->args().params();
-                if (params.size() != args.size()) {
-                    return false;
-                }
-
-                return std::ranges::all_of(std::views::iota(0u, params.size()),
-                                           [&](std::size_t i) {
-                                               auto type_ptr = params[i].first.lock();
-                                               return type_ptr && type_ptr->name() == args[i];
-                                           });
-            };
-
-            const auto it = std::ranges::find_if(range, matches);
-            if (it != range.end()) {
-                return it->second;
+    inline auto UnityClass::find_with_args(const std::vector<std::string_view>& args, const std::ranges::subrange<MethodIt>& range) -> std::optional<std::weak_ptr<UnityMethod>> {
+        auto matches = [&](const auto& entry) -> auto {
+            const auto& params = entry.second->args().params();
+            if (params.size() != args.size()) {
+                return false;
             }
-            return std::nullopt;
+
+            return std::ranges::all_of(std::views::iota(0U, params.size()),
+                                       [&](std::size_t i) -> bool {
+                                           auto type_ptr = params[i].first.lock();
+                                           return type_ptr && type_ptr->name() == args[i];
+                                       });
+        };
+
+        const auto it = std::ranges::find_if(range, matches);
+        if (it != range.end()) {
+            return it->second;
         }
-    };
+        return std::nullopt;
+    }
+
+    inline UnityField::UnityField(const std::uintptr_t native_ptr,
+                                  const std::uintptr_t native_class_ptr,
+                                  const std::weak_ptr<UnityType>& native_type,
+                                  const std::string_view& native_name,
+                                  const std::size_t native_offset,
+                                  const std::bitset<32> native_flags) :
+        native_ptr{native_ptr},
+        native_class_ptr{native_class_ptr},
+        native_type{native_type},
+        native_name{native_name},
+        native_offset{native_offset},
+        native_flags{native_flags} {
+        native_is_static = flags(attributes::FieldAttributes::Static);
+    }
+
+    inline auto UnityField::name() const noexcept -> std::string_view {
+        return native_name;
+    }
+
+    inline auto UnityField::ptr() const noexcept -> std::uintptr_t {
+        return native_ptr;
+    }
+
+    inline auto UnityField::type() const noexcept -> std::weak_ptr<UnityType> {
+        return native_type;
+    }
+
+    inline auto UnityField::offset() const noexcept -> std::size_t {
+        return native_offset;
+    }
+
+    inline auto UnityField::parent() const noexcept -> std::weak_ptr<UnityClass> {
+        return native_class;
+    }
+
+    inline auto UnityField::flags(attributes::FieldAttributes attributes) const noexcept -> bool {
+        return native_flags.test(static_cast<uint32_t>(attributes));
+    }
+
+    inline auto UnityField::is_static() const noexcept -> bool {
+        return native_is_static;
+    }
+
+    inline UnityMethodArgs::UnityMethodArgs() = default;
+    inline UnityMethodArgs::~UnityMethodArgs() = default;
+
+    inline UnityMethodArgs::UnityMethodArgs(const std::map<std::string_view, std::shared_ptr<UnityType>>& types, std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>>& params) :
+        args(types | std::views::transform([](const auto& pair) -> auto {
+            return std::pair{pair.first, std::weak_ptr<UnityType>(pair.second)};
+        }) | std::ranges::to<std::map>()),
+        param_vec{std::move(params)} {}
+
+    inline UnityMethodArgs::UnityMethodArgs(UnityMethodArgs&& other) noexcept :
+        args(std::move(other.args)),
+        param_vec(std::move(other.param_vec)) {}
+
+    inline auto UnityMethodArgs::operator=(UnityMethodArgs&& other) noexcept -> UnityMethodArgs& {
+        args = std::move(other.args);
+        param_vec = std::move(other.param_vec);
+        return *this;
+    }
+
+    inline auto UnityMethodArgs::count() const noexcept -> std::size_t {
+        return args.size();
+    }
+
+    inline auto UnityMethodArgs::map() const noexcept -> const std::map<std::string_view, std::weak_ptr<UnityType>>& {
+        return args;
+    }
+
+    inline auto UnityMethodArgs::params() const noexcept -> const std::vector<std::pair<std::weak_ptr<UnityType>, std::string_view>>& {
+        return param_vec;
+    }
+
+    inline UnityMethod::UnityMethod(const std::uintptr_t native_ptr,
+                                    const std::uintptr_t native_call_ptr,
+                                    const std::uintptr_t native_class_ptr,
+                                    const std::weak_ptr<UnityType>& native_type,
+                                    const std::string_view& native_name,
+                                    const std::function<UnityMethodArgs()>& args_callback,
+                                    const std::function<std::optional<void*>()>& compile,
+                                    const std::bitset<32>& native_flags) :
+        native_ptr{native_ptr},
+        native_call_ptr{native_call_ptr},
+        native_class_ptr{native_class_ptr},
+        native_type{native_type},
+        native_name{native_name},
+        native_flags{native_flags},
+        compile_call{compile} {
+        native_args = args_callback();
+        native_is_static = flags(attributes::MethodAttributes::Static);
+        native_is_compile = !compile;
+    }
+
+    inline auto UnityMethod::name() const noexcept -> std::string_view {
+        return native_name;
+    }
+
+    inline auto UnityMethod::ptr() const noexcept -> std::uintptr_t {
+        return native_ptr;
+    }
+
+    inline auto UnityMethod::call() -> std::uintptr_t {
+        if (native_is_compile) {
+            return native_call_ptr;
+        }
+        compile();
+        return native_call_ptr;
+    }
+
+    inline auto UnityMethod::type() const noexcept -> std::weak_ptr<UnityType> {
+        return native_type;
+    }
+
+    inline auto UnityMethod::args() const noexcept -> const UnityMethodArgs& {
+        return native_args;
+    }
+
+    inline auto UnityMethod::parent() const noexcept -> std::weak_ptr<UnityClass> {
+        return native_class;
+    }
+
+    inline auto UnityMethod::flags(attributes::MethodAttributes attributes) const noexcept -> bool {
+        return native_flags.test(static_cast<uint32_t>(attributes));
+    }
+
+    inline auto UnityMethod::is_static() const noexcept -> bool {
+        return native_is_static;
+    }
+
+    template<typename Return, typename... Args>
+    auto UnityMethod::invoke(Args&&... args) -> Return {
+        // TODO: use 'std::start_lifetime_as' in c++23 if compiler support
+        return std::bit_cast<Return(UNITY_CALLING_CONVENTION*)(Args...)>(call())(std::forward<Args>(args)...);
+    }
+
+    inline auto UnityMethod::compile() -> void {
+        const auto result = compile_call();
+        if (!result) {
+            throw std::runtime_error("nullptr");
+        }
+        native_call_ptr = std::bit_cast<std::uintptr_t>(*result);
+        native_is_compile = result.has_value();
+    }
 
     namespace details {
         inline UnityMode mode;
@@ -1213,6 +1331,48 @@ namespace unity {
         return details::find_assembly_impl(name);
     }
 
+    inline auto find_class(const std::string_view assembly_name, const std::string_view class_name) -> std::optional<std::weak_ptr<UnityClass>> {
+        const auto assembly_result = find_assembly(assembly_name);
+        if (!assembly_result || assembly_result->expired()) {
+            return std::nullopt;
+        }
+
+        const auto& assembly = *assembly_result->lock();
+        return assembly[class_name];
+    }
+
+    inline auto find_field(const std::string_view assembly_name, const std::string_view class_name, const std::string_view field_name) -> std::optional<std::weak_ptr<UnityField>> {
+        const auto class_result = find_class(assembly_name, class_name);
+        if (!class_result || class_result->expired()) {
+            return std::nullopt;
+        }
+
+        const auto& class_ = *class_result->lock();
+        return class_[UTYPE(UnityField), field_name];
+    }
+
+    namespace udl {
+        inline auto operator""_assembly(const char* name, const std::size_t /*unused*/) -> std::optional<std::weak_ptr<UnityAssembly>> {
+            return find_assembly(name);
+        }
+
+        inline auto operator""_class(const char* name, const std::size_t /*unused*/) -> std::optional<std::weak_ptr<UnityClass>> {
+            const auto parts = util::split_str(name, ":");
+            if (parts.size() != 2) {
+                return std::nullopt;
+            }
+            return find_class(parts[0], parts[1]);
+        }
+
+        inline auto operator""_field(const char* name, const std::size_t /*unused*/) -> std::optional<std::weak_ptr<UnityField>> {
+            const auto parts = util::split_str(name, ":");
+            if (parts.size() != 3) {
+                return std::nullopt;
+            }
+            return find_field(parts[0], parts[1], parts[2]);
+        }
+    } // namespace udl
+
     namespace api {
         UNITY_ACCESS;
 
@@ -1220,7 +1380,7 @@ namespace unity {
             class String;
             class Type;
 
-            class Object : Class {
+            class Object : public Class {
                 union {
                     void* this_{nullptr};
                     void* vtable;
@@ -1429,6 +1589,6 @@ namespace unity {
             class Transform : public Component {};
 
             class Camera : public Behaviour {};
-        }
+        } // namespace engine
     } // namespace api
 } // namespace unity
