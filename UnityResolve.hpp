@@ -695,9 +695,8 @@ namespace unity {
         native_type{native_type},
         native_name{native_name},
         native_offset{native_offset},
-        native_flags{native_flags} {
-        native_is_static = flags(attributes::FieldAttributes::Static);
-    }
+        native_flags{native_flags},
+        native_is_static(flags(attributes::FieldAttributes::Static)) {}
 
     inline auto UnityField::name() const noexcept -> std::string_view {
         return native_name;
@@ -772,10 +771,10 @@ namespace unity {
         native_type{native_type},
         native_name{native_name},
         native_flags{native_flags},
+        native_is_static(flags(attributes::MethodAttributes::Static)),
+        native_is_compile(!compile),
         compile_call{compile} {
         native_args = args_callback();
-        native_is_static = flags(attributes::MethodAttributes::Static);
-        native_is_compile = !compile;
     }
 
     inline auto UnityMethod::name() const noexcept -> std::string_view {
@@ -822,7 +821,7 @@ namespace unity {
 
     inline auto UnityMethod::compile() -> void {
         const auto result = compile_call();
-        if (!result) {
+        if (!result.has_value()) {
             throw std::runtime_error("nullptr");
         }
         native_call_ptr = std::bit_cast<std::uintptr_t>(*result);
@@ -891,7 +890,7 @@ namespace unity {
             const std::string_view call_name = auto_select(il2cpp_name, mono_name);
             if (mode == UnityMode::IL2CPP) {
                 using namespace std::chrono_literals;
-                while (!invoke_dyn_library<bool>("il2cpp_is_vm_thread", nullptr)) {
+                while (!*invoke_dyn_library<bool>("il2cpp_is_vm_thread", nullptr)) {
                     std::this_thread::sleep_for(100ms);
                 }
                 return invoke_dyn_library<void*>(call_name).has_value();
@@ -909,7 +908,7 @@ namespace unity {
 
         inline auto update_domain() -> bool {
             const std::string_view call_name = auto_select("il2cpp_domain_get", "mono_get_root_domain");
-            if (const auto result = invoke_dyn_library<void*>(call_name)) {
+            if (const auto result = invoke_dyn_library<void*>(call_name); result.has_value()) {
                 unity_domain = *result;
                 return true;
             }
