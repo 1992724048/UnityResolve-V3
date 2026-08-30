@@ -106,8 +106,9 @@ namespace unity {
                 this->func = std::bit_cast<Ret(UNITY_CALLING_CONVENTION*)(Args...)>(address);
             }
 
-            auto operator()(const Args&... args) -> Ret {
-                return func(std::forward<Args>(args)...);
+            template<typename... U> requires (std::is_invocable_v<std::function<Ret(Args...)>, U...>)
+            auto operator()(U&&... args) -> Ret {
+                return func(std::forward<U>(args)...);
             }
 
             [[nodiscard]] auto function() const -> const std::function<Ret(Args...)>& {
@@ -836,8 +837,8 @@ namespace unity {
         inline std::map<std::uintptr_t, std::shared_ptr<UnityType>> unity_types;
         inline std::map<std::uintptr_t, std::weak_ptr<UnityClass>> unity_classes;
 
-        inline auto method = UTYPE(UnityMethod);
-        inline auto field = UTYPE(UnityField);
+        constexpr auto method = UTYPE(UnityMethod);
+        constexpr auto field = UTYPE(UnityField);
 
         template<typename Return, typename... Args>
         auto invoke_dyn_library(const std::string_view& func_name, Args&&... args) -> std::optional<std::conditional_t<std::is_void_v<Return>, std::monostate, Return>> {
@@ -924,7 +925,7 @@ namespace unity {
 
         inline auto try_find_class(const std::string_view assembly_name, const std::string_view class_name) -> std::optional<std::weak_ptr<UnityClass>> {
             const auto assembly_result = find_assembly_impl(assembly_name);
-            if (!assembly_result) {
+            if (!assembly_result.has_value()) {
                 return std::nullopt;
             }
             const auto& assembly = *assembly_result->lock();
@@ -934,12 +935,12 @@ namespace unity {
         template<typename Ret, typename... Args>
         auto try_find_method(const std::string_view assembly_name, const std::string_view class_name, const std::string_view method_name, const std::vector<std::string_view> args = {}) -> access::Method<Ret, Args...> {
             const auto class_result = try_find_class(assembly_name, class_name);
-            if (!class_result) {
+            if (!class_result.has_value()) {
                 return {0x0};
             }
             const auto& class_ = *class_result->lock();
             const auto method_result = class_[method, method_name, args];
-            if (!method_result) {
+            if (!method_result.has_value()) {
                 return {0x0};
             }
             return {method_result->lock()->call()};
@@ -953,7 +954,7 @@ namespace unity {
 
             std::uint32_t handle = 0;
             auto result = details::invoke_dyn_library<uint32_t>(mode == UnityMode::IL2CPP ? "il2cpp_gchandle_new" : "mono_gchandle_new", obj, pinned);
-            if (result) {
+            if (result.has_value()) {
                 handle = *result;
             }
             if (handle == 0) {
@@ -986,7 +987,7 @@ namespace unity {
 
             inline auto try_load_args_il2cpp(void* method_ptr) -> UnityMethodArgs {
                 const auto param_count_result = details::invoke_dyn_library<int>("il2cpp_method_get_param_count", method_ptr);
-                if (!param_count_result || *param_count_result == 0) {
+                if (!param_count_result.has_value() || *param_count_result == 0) {
                     return {};
                 }
                 const int param_count = *param_count_result;
@@ -995,7 +996,7 @@ namespace unity {
                 for (auto index = 0; index < param_count; index++) {
                     const auto arg_type = details::invoke_dyn_library<void*>("il2cpp_method_get_param", method_ptr, index);
                     const auto arg_name = details::invoke_dyn_library<const char*>("il2cpp_method_get_param_name", method_ptr, index);
-                    if (!arg_name || !arg_type) {
+                    if (!arg_name.has_value() || !arg_type.has_value()) {
                         continue;
                     }
                     auto& type = try_find_type(*arg_type);
@@ -1012,7 +1013,7 @@ namespace unity {
                 }
                 auto* signature = *signature_ptr_result;
                 const auto param_count_result = details::invoke_dyn_library<int>("mono_signature_get_param_count", signature);
-                if (!param_count_result || *param_count_result == 0) {
+                if (!param_count_result.has_value() || *param_count_result == 0) {
                     return {};
                 }
 
@@ -1028,7 +1029,7 @@ namespace unity {
 
                 do {
                     const auto type_ptr_result = details::invoke_dyn_library<void*>("mono_signature_get_params", signature, &iter);
-                    if (!type_ptr_result) {
+                    if (!type_ptr_result.has_value()) {
                         continue;
                     }
                     type_ptr = *type_ptr_result;
@@ -1068,7 +1069,7 @@ namespace unity {
                 void* method_ptr{nullptr};
                 do {
                     const auto method_ptr_result = details::invoke_dyn_library<void*>("il2cpp_class_get_methods", class_ptr, &iter);
-                    if (!method_ptr_result) {
+                    if (!method_ptr_result.has_value()) {
                         continue;
                     }
 
@@ -1079,7 +1080,7 @@ namespace unity {
                     auto type = details::invoke_dyn_library<void*>("il2cpp_method_get_return_type", method_ptr);
                     auto flags = details::invoke_dyn_library<int>("il2cpp_method_get_flags", method_ptr, &tmp);
 
-                    if (!name || !type || !flags || *name == nullptr || *type == nullptr) {
+                    if (!name.has_value() || !type.has_value() || !flags.has_value() || *name == nullptr || *type == nullptr) {
                         continue;
                     }
 
@@ -1092,13 +1093,13 @@ namespace unity {
                 void* method_ptr{nullptr};
                 do {
                     const auto method_ptr_result = details::invoke_dyn_library<void*>("mono_class_get_methods", class_ptr, &iter);
-                    if (!method_ptr_result) {
+                    if (!method_ptr_result.has_value()) {
                         continue;
                     }
 
                     method_ptr = *method_ptr_result;
                     const auto signature_ptr_result = details::invoke_dyn_library<void*>("mono_method_signature", method_ptr);
-                    if (!signature_ptr_result) {
+                    if (!signature_ptr_result.has_value()) {
                         continue;
                     }
                     auto* signature = *signature_ptr_result;
@@ -1108,7 +1109,7 @@ namespace unity {
                     auto type = details::invoke_dyn_library<void*>("mono_signature_get_return_type", signature);
                     auto flags = details::invoke_dyn_library<int>("mono_method_get_flags", method_ptr, &tmp);
 
-                    if (!name || !type || !flags || *name == nullptr || *type == nullptr) {
+                    if (!name.has_value() || !type.has_value() || !flags.has_value() || *name == nullptr || *type == nullptr) {
                         continue;
                     }
 
@@ -1135,7 +1136,7 @@ namespace unity {
                 void* field_ptr{nullptr};
                 do {
                     const auto field_ptr_result = details::invoke_dyn_library<void*>(class_get_fields, class_ptr, &iter);
-                    if (!field_ptr_result) {
+                    if (!field_ptr_result.has_value()) {
                         continue;
                     }
                     field_ptr = *field_ptr_result;
@@ -1147,7 +1148,7 @@ namespace unity {
                     const auto field_offset = details::invoke_dyn_library<int>(field_get_offset, field_ptr);
                     const auto field_flags = details::invoke_dyn_library<int>(field_get_flags, field_ptr);
 
-                    if (!field_name || !field_type || !field_offset) {
+                    if (!field_name.has_value() || !field_type.has_value() || !field_offset.has_value()) {
                         continue;
                     }
 
@@ -1174,7 +1175,7 @@ namespace unity {
                                       void* class_ptr,
                                       std::map<std::string_view, std::shared_ptr<UnityClass>>& container) -> void {
                 const auto name_opt = details::invoke_dyn_library<const char*>(class_get_name, class_ptr);
-                if (!name_opt) {
+                if (!name_opt.has_value()) {
                     return;
                 }
 
@@ -1215,7 +1216,7 @@ namespace unity {
 
             inline auto try_load_class_mono(const std::shared_ptr<UnityAssembly>& assembly, void* image_ptr, std::map<std::string_view, std::shared_ptr<UnityClass>>& container) -> void {
                 const auto table = details::invoke_dyn_library<void*>("mono_image_get_table_info", image_ptr, 2);
-                if (!table) {
+                if (!table.has_value()) {
                     return;
                 }
                 const auto count = details::invoke_dyn_library<int>("mono_table_info_get_rows", *table);
@@ -1244,12 +1245,12 @@ namespace unity {
                 }
 
                 const auto image_opt = details::invoke_dyn_library<void*>(assembly_get_image, assembly_ptr);
-                if (!image_opt) {
+                if (!image_opt.has_value()) {
                     return;
                 }
 
                 const auto name_opt = details::invoke_dyn_library<const char*>(image_get_name, *image_opt);
-                if (!name_opt) {
+                if (!name_opt.has_value()) {
                     return;
                 }
                 const auto callback = std::bind(try_load_class, *name_opt, assembly_ptr, *image_opt, std::placeholders::_1);
@@ -1260,7 +1261,7 @@ namespace unity {
             inline auto try_load_assembly_il2cpp() -> void {
                 std::size_t size = 0;
                 const auto result = details::invoke_dyn_library<void**>("il2cpp_domain_get_assemblies", details::unity_domain, &size);
-                if (!result) {
+                if (!result.has_value()) {
                     return;
                 }
 
@@ -1338,7 +1339,7 @@ namespace unity {
 
     inline auto find_class(const std::string_view assembly_name, const std::string_view class_name) -> std::optional<std::weak_ptr<UnityClass>> {
         const auto assembly_result = find_assembly(assembly_name);
-        if (!assembly_result || assembly_result->expired()) {
+        if (!assembly_result.has_value() || assembly_result->expired()) {
             return std::nullopt;
         }
 
@@ -1348,7 +1349,7 @@ namespace unity {
 
     inline auto find_field(const std::string_view assembly_name, const std::string_view class_name, const std::string_view field_name) -> std::optional<std::weak_ptr<UnityField>> {
         const auto class_result = find_class(assembly_name, class_name);
-        if (!class_result || class_result->expired()) {
+        if (!class_result.has_value() || class_result->expired()) {
             return std::nullopt;
         }
 
@@ -1607,7 +1608,7 @@ namespace unity {
 
                 auto set_name(csharp::String* value) -> void {
                     static auto func = details::try_find_method<void, Object*, csharp::String*>("UnityEngine.CoreModule.dll", "Object", "set_name");
-                    return func(this, value);
+                    func(this, value);
                 }
 
                 auto get_name() -> csharp::String* {
@@ -1624,7 +1625,7 @@ namespace unity {
 
                 auto destroy() -> void {
                     static auto func = details::try_find_method<void, Object*>("UnityEngine.CoreModule.dll", "Object", "Destroy");
-                    return func(this);
+                    func(this);
                 }
 
                 auto instantiate() -> Object* {
@@ -1634,7 +1635,7 @@ namespace unity {
 
                 auto dont_destroy_on_load() -> void {
                     static auto func = details::try_find_method<void, Object*>("UnityEngine.CoreModule.dll", "Object", "DontDestroyOnLoad");
-                    return func(this);
+                    func(this);
                 }
 
                 template<std::derived_from<Object> T>
@@ -1646,8 +1647,8 @@ namespace unity {
 
             class GameObject : public Object {
                 auto set_active(const bool value) -> void {
-                    static auto func = details::try_find_method<void, GameObject*, bool>("UnityEngine.CoreModule.dll", "GameObject", "set_active");
-                    return func(this, value);
+                    static auto func = details::try_find_method<void, GameObject*, const bool>("UnityEngine.CoreModule.dll", "GameObject", "set_active");
+                    func(this, value);
                 }
 
                 auto get_active() -> bool {
@@ -1673,9 +1674,9 @@ namespace unity {
                     return func(this);
                 }
 
-                auto set_tag(csharp::String* tag) -> void {
+                auto set_tag(csharp::String* value) -> void {
                     static auto func = details::try_find_method<void, Component*, csharp::String*>("UnityEngine.CoreModule.dll", "Component", "set_tag");
-                    return func(this, tag);
+                    func(this, value);
                 }
             public:
                 inline static Property<csharp::String*, Component> tag{get_tag, set_tag};
@@ -1742,7 +1743,7 @@ namespace unity {
             class Behaviour : public Component {
                 auto set_enabled(const bool value) -> void {
                     static auto func = details::try_find_method<void, Behaviour*, bool>("UnityEngine.CoreModule.dll", "Behaviour", "set_enabled");
-                    return func(this, value);
+                    func(this, value);
                 }
 
                 auto get_enabled() -> bool {
@@ -1761,7 +1762,7 @@ namespace unity {
             class Transform : public Component {
                 auto set_position(const glm::vec3 value) -> void {
                     static auto func = details::try_find_method<void, Transform*, glm::vec3>("UnityEngine.CoreModule.dll", "Transform", "set_position");
-                    return func(this, value);
+                    func(this, value);
                 }
 
                 auto get_position() -> glm::vec3 {
@@ -1771,7 +1772,7 @@ namespace unity {
 
                 auto set_local_position(const glm::vec3 value) -> void {
                     static auto func = details::try_find_method<void, Transform*, glm::vec3>("UnityEngine.CoreModule.dll", "Transform", "set_localPosition");
-                    return func(this, value);
+                    func(this, value);
                 }
 
                 auto get_local_position() -> glm::vec3 {
@@ -1786,9 +1787,9 @@ namespace unity {
             enum class Eye : int { Left, Right, Mono };
 
             class Camera : public Behaviour {
-                auto set_fov(const float fov) -> void {
+                auto set_fov(const float value) -> void {
                     static auto func = details::try_find_method<void, Camera*, float>("UnityEngine.CoreModule.dll", "Camera", "set_fieldOfView");
-                    return func(this, fov);
+                    func(this, value);
                 }
 
                 auto get_fov() -> float {
@@ -1796,9 +1797,9 @@ namespace unity {
                     return func(this);
                 }
 
-                auto set_iso(const int iso) -> void {
+                auto set_iso(const int value) -> void {
                     static auto func = details::try_find_method<void, Camera*, int>("UnityEngine.CoreModule.dll", "Camera", "set_iso");
-                    return func(this, iso);
+                    func(this, value);
                 }
 
                 auto get_iso() -> int {
@@ -1806,9 +1807,9 @@ namespace unity {
                     return func(this);
                 }
 
-                auto set_depth(const float depth) -> void {
+                auto set_depth(const float value) -> void {
                     static auto func = details::try_find_method<void, Camera*, float>("UnityEngine.CoreModule.dll", "Camera", "set_depth");
-                    return func(this, depth);
+                    func(this, value);
                 }
 
                 auto get_depth() -> float {
@@ -1816,9 +1817,9 @@ namespace unity {
                     return func(this);
                 }
 
-                auto set_hdr(const bool hdr) -> void {
+                auto set_hdr(const bool value) -> void {
                     static auto func = details::try_find_method<void, Camera*, bool>("UnityEngine.CoreModule.dll", "Camera", "set_allowHDR");
-                    return func(this, hdr);
+                    func(this, value);
                 }
 
                 auto get_hdr() -> bool {
@@ -1831,7 +1832,7 @@ namespace unity {
                 inline static Property<float, Camera> depth{get_depth, set_depth};
                 inline static Property<bool, Camera> hdr{get_hdr, set_hdr};
 
-                static auto main() -> Camera* {
+                static auto main_camera() -> Camera* {
                     static auto func = details::try_find_method<Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_main");
                     return func();
                 }

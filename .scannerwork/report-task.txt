@@ -1,0 +1,6 @@
+projectKey=UnityResolve-V3
+serverUrl=http://127.0.0.1:3000
+serverVersion=26.8.0.126808
+dashboardUrl=http://127.0.0.1:3000/dashboard?id=UnityResolve-V3
+ceTaskId=771dfb43-3d22-4ae3-b7af-6d38c8659b64
+ceTaskUrl=http://127.0.0.1:3000/api/ce/task?id=771dfb43-3d22-4ae3-b7af-6d38c8659b64
