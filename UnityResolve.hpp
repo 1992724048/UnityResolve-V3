@@ -160,11 +160,11 @@ namespace unity {
                 return {get_, set_};
             }
 
-            explicit(false) operator T&() requires std::is_void_v<C> {
+            explicit(false) operator T() requires std::is_void_v<C> {
                 return get();
             }
 
-            explicit(false) operator const T&() requires std::is_void_v<C> {
+            explicit(false) operator const T() requires std::is_void_v<C> {
                 return get();
             }
 
@@ -193,7 +193,7 @@ namespace unity {
                     set_(value);
                 }
 
-                explicit(false) operator T&() {
+                explicit(false) operator T() {
                     return get();
                 }
 
@@ -1541,11 +1541,11 @@ namespace unity {
                 }
 
                 auto data() -> T* {
-                    return list.data();
+                    return list->data();
                 }
 
                 auto data() const -> const T* {
-                    return list.data();
+                    return list->data();
                 }
 
                 [[nodiscard]] auto size() const -> std::size_t {
@@ -1615,7 +1615,7 @@ namespace unity {
                     return func(this);
                 }
             public:
-                inline static Property<csharp::String*, Object> name{get_name, set_name};
+                inline static Property<csharp::String*, Object> name{&Object::get_name, &Object::set_name};
 
                 template<typename T>
                 auto native() -> T* {
@@ -1655,7 +1655,7 @@ namespace unity {
                     return func(this);
                 }
             public:
-                inline static Property<bool, GameObject> active{get_active, set_active};
+                inline static Property<bool, GameObject> active{&GameObject::get_active, &GameObject::set_active};
 
                 auto transform() -> Transform* {
                     static auto func = details::try_find_method<Transform*, GameObject*>("UnityEngine.CoreModule.dll", "GameObject", "get_transform");
@@ -1678,7 +1678,7 @@ namespace unity {
                     func(this, value);
                 }
             public:
-                inline static Property<csharp::String*, Component> tag{get_tag, set_tag};
+                inline static Property<csharp::String*, Component> tag{&Component::get_tag, &Component::set_tag};
 
                 auto transform() -> Transform* {
                     static auto func = details::try_find_method<Transform*, Component*>("UnityEngine.CoreModule.dll", "Component", "get_transform");
@@ -1750,7 +1750,7 @@ namespace unity {
                     return func(this);
                 }
             public:
-                inline static Property<bool, Behaviour> enabled{get_enabled, set_enabled};
+                inline static Property<bool, Behaviour> enabled{&Behaviour::get_enabled, &Behaviour::set_enabled};
 
                 auto is_active_and_enabled() -> bool {
                     static auto func = details::try_find_method<bool, Behaviour*>("UnityEngine.CoreModule.dll", "Behaviour", "get_isActiveAndEnabled");
@@ -1779,8 +1779,8 @@ namespace unity {
                     return func(this);
                 }
             public:
-                inline static Property<glm::vec3, Transform> position{get_position, set_position};
-                inline static Property<glm::vec3, Transform> local_position{get_local_position, set_local_position};
+                inline static Property<glm::vec3, Transform> position{&Transform::get_position, &Transform::set_position};
+                inline static Property<glm::vec3, Transform> local_position{&Transform::get_local_position, &Transform::set_local_position};
             };
 
             enum class Eye : int { Left, Right, Mono };
@@ -1826,10 +1826,10 @@ namespace unity {
                     return func(this);
                 }
             public:
-                inline static Property<float, Camera> fov{get_fov, set_fov};
-                inline static Property<int, Camera> iso{get_iso, set_iso};
-                inline static Property<float, Camera> depth{get_depth, set_depth};
-                inline static Property<bool, Camera> hdr{get_hdr, set_hdr};
+                inline static Property<float, Camera> fov{&Camera::get_fov, &Camera::set_fov};
+                inline static Property<int, Camera> iso{&Camera::get_iso, &Camera::set_iso};
+                inline static Property<float, Camera> depth{&Camera::get_depth, &Camera::set_depth};
+                inline static Property<bool, Camera> hdr{&Camera::get_hdr, &Camera::set_hdr};
 
                 static auto main_camera() -> Camera* {
                     static auto func = details::try_find_method<Camera*>("UnityEngine.CoreModule.dll", "Camera", "get_main");

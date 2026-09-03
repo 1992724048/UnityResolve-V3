@@ -24,4 +24,8 @@
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="nuget.config" />
+    <None Include="packages.config" />
+  </ItemGroup>
 </Project>
